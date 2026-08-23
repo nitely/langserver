@@ -121,6 +121,14 @@ proc route(
   ## request run on its own. Handling it here instead would stall the whole
   ## connection for the duration, and `$/cancelRequest` could never be read
   ## while the request it cancels is still running.
+  ##
+  ## Messages are therefore handled concurrently, with one ordering guarantee:
+  ## chronos runs an async body up to its first `await`, and the way down to the
+  ## handler does not suspend, so whatever a handler does before it yields is
+  ## done before the next message is read. Handlers have to hold up their end of
+  ## that: anything a following message could look at has to be applied in that
+  ## prefix. `ls.registerOpenFile` is the part of opening a file that exists for
+  ## this reason.
   let handled = ls.srv.router.route(request)
   ls.trackRequest(request, handled)
   asyncSpawn ls.respond(conn, handled)

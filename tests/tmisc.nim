@@ -188,6 +188,43 @@ suite "Nimlangserver didOpen visibility":
     check uri in ls.openFiles #The entry the readers look for
     check ls.openFiles[uri].fingerTable.len > 0 #The contents were stashed too
 
+suite "Nimlangserver didOpen ordering":
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification(
+    "window/showMessage", "extension/statusUpdate", "textDocument/publishDiagnostics",
+    "$/progress",
+  )
+
+  test "a request sent right behind didOpen is answered against it":
+    # The two messages go out back to back with nothing in between, so the only
+    # thing that can make the request see the file is didOpen having finished
+    # its synchronous part before the transport read the next message. Without
+    # that, `tryGetNimsuggest` does not know the uri and the request is answered
+    # with an empty result.
+    let initParams =
+      LspInitializeParams %* {
+        "processId": %getCurrentProcessId(),
+        "rootUri": fixtureUri("projects/hw/"),
+        "capabilities": {"window": {"workDoneProgress": true}},
+      }
+    discard waitFor client.initialize(initParams)
+
+    ls.nimsuggestInit = newFuture[void]("parked") #So didOpen gets no further
+    let file = "projects/hw/hw.nim"
+    let uri = fixtureUri(file)
+    client.notify("textDocument/didOpen", %createDidOpenParams(file))
+    let locations = to(
+      waitFor client.call("textDocument/definition", %positionParams(uri, 1, 6)),
+      seq[Location],
+    )
+
+    check locations.len == 1
+    check locations[0].uri == uri
+
 suite "Nimlangserver idle nimsuggest cleanup":
   let cmdParams = CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
   let ls = main(cmdParams)

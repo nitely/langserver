@@ -76,6 +76,7 @@ The MCP flow is the same shared pipeline with a thinner route layer:
 
 - `LanguageServer` is a shared state object for both modes. The `serverMode` field switches the shape of the initialize params/capabilities stored inside it.
 - `lstransports2.nim` is shared by both modes; both speak JSON-RPC over a socket with `Content-Length` framing.
+- Messages are dispatched concurrently, with one ordering guarantee: the part of a handler that runs before its first `await` completes before the next message is read off the connection. `lstransports2.route` returns immediately instead of awaiting the handler, and chronos runs async bodies eagerly, so that prefix is the only place where ordering against later messages is guaranteed. Anything a following message could observe — the `openFiles` entry, the stash file contents — has to be applied there. That is what `ls.registerOpenFile` is for; `didChange`, `didClose` and `didChangeConfiguration` happen to be fully synchronous already.
 - MCP currently treats the current working directory as the workspace root (`getRootPath(McpInitializeParams)` returns `getCurrentDir()`), so start the server from the workspace you want to inspect.
 - `tickLs` in `nimlangserver.nim` keeps running after initialization and calls `ls.tick()` to prune completed requests and stop idle `nimsuggest` processes.
 
