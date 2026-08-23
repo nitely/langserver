@@ -506,7 +506,7 @@ proc initialize*(
     rootPath = getCurrentDir().pathToUri.uriToPath
 
   ls.mcpServerCapabilities = result.capabilities
-  ls.nimSuggestInit = ls.initNimsuggestInstances(rootPath)
+  ls.nimsuggestInit = ls.initNimsuggestInstances(rootPath)
 
 proc listTools*(
     ls: LanguageServer, params: McpListToolsParams
