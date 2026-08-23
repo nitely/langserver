@@ -1,4 +1,4 @@
-import ../[nimlangserver, ls, lstransports, utils]
+import ../[nimlangserver, ls, utils]
 import ../protocol/[enums, types]
 import
   std/[options, json, os, jsonutils, sequtils, strutils, sugar, strformat]
@@ -92,7 +92,7 @@ suite "Nimlangserver pending requests":
     # cancelling the awaited projectFile future) is re-raised into the event
     # loop, escapes runForever and hits main's `except Exception: quit(1)`.
     # The spawned task must swallow cancellation instead of failing.
-    let ls = LanguageServer(serverMode: lsp, transportMode: socket)
+    let ls = LanguageServer(serverMode: lsp)
     let uri = "file:///tmp/tpending419.nim"
     let projectFileFut = newFuture[string]("projectFile")
     ls.openFiles[uri] = NlsFileInfo(projectFile: projectFileFut)
@@ -148,17 +148,3 @@ suite "Nimlangserver idle nimsuggest cleanup":
         removed = true
         break
     check removed
-
-suite "Nimlangserver transport teardown":
-  test "writeOutput drops writes after the stdio stream is torn down":
-    # Regression test for #418: an in-flight runRpc continuation resuming after
-    # onExit closed ls.outStream wrote to a closed FILE and SIGSEGV'd inside
-    # libc fwrite. Test approach: the real crash needs a stdio teardown racing
-    # an async write and cannot be reproduced in-process without taking the
-    # test runner down with it, so we exercise the guarded state instead —
-    # after onExit, outStream is nil and a late writeOutput must be a no-op
-    # (pre-fix this dereferences a nil stream and dies).
-    let ls = LanguageServer(serverMode: lsp, transportMode: stdio)
-    doAssert ls.outStream.isNil
-    ls.writeOutput(%*{"jsonrpc": "2.0", "id": 1, "result": newJNull()})
-    check ls.outStream.isNil

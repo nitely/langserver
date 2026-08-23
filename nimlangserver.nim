@@ -1,7 +1,7 @@
-import json_rpc/[servers/socketserver, private/jrpc_sys, jsonmarshal, rpcclient, router]
+import json_rpc/servers/socketserver
 import chronicles, chronos
 import std/[syncio, os, json, strutils, strformat]
-import ls, utils, lstransports, asyncprocmonitor
+import ls, utils, lstransports2, asyncprocmonitor
 import routes/[lsp, mcp]
 import protocol/types
 when defined(posix):
@@ -114,8 +114,7 @@ proc showHelp() =
   echo "  --version, -v            Show version information"
   echo "  --lsp                    Run in LSP server mode (default)"
   echo "  --mcp                    Run in MCP server mode"
-  echo "  --stdio                  Use stdio transport (default)"
-  echo "  --socket                 Use socket transport"
+  echo "  --socket                 Use socket transport (the only one supported)"
   echo "  --port=<port>            Port to use for socket transport"
   echo "  --clientProcessId=<pid>  Exit when the given process ID terminates"
   echo ""
@@ -163,7 +162,8 @@ proc handleParams(): CommandLineParams =
     if param == "--mcp":
       result.mode = some ServerMode.mcp
     if param == "--stdio":
-      result.transport = some TransportMode.stdio
+      stderr.writeLine("The stdio transport is not supported, use --socket")
+      quit 1
     if param == "--socket":
       result.transport = some TransportMode.socket
     if param.startsWith "--port":
@@ -176,14 +176,13 @@ proc handleParams(): CommandLineParams =
     if param in ["help", "--help", "-h"]:
       showHelp()
     inc i
-  if result.transport.isSome and result.transport.get == socket:
-    if result.port == default(Port):
-      result.port = getNextFreePort()
-    echo &"port={result.port}"
+  if result.port == default(Port):
+    result.port = getNextFreePort()
+  echo &"port={result.port}"
   if result.mode.isNone:
     result.mode = some ServerMode.lsp
   if result.transport.isNone:
-    result.transport = some TransportMode.stdio
+    result.transport = some TransportMode.socket
 
 proc registerProcMonitor(ls: LanguageServer) =
   if ls.cmdLineClientProcessId.isSome:
@@ -213,16 +212,9 @@ proc tickLs*(ls: LanguageServer, time = 1.seconds) {.async.} =
 
 proc main*(cmdLineParams: CommandLineParams): LanguageServer =
   debug "Starting nimlangserver", version = LSPVersion, params = cmdLineParams
-  #[
-  `nimlangserver` supports both transports: stdio and socket. By default it uses stdio transport. 
-    But we do construct a RPC socket server even in stdio mode, so that we can reuse the same code for both transports.
-  ]#
   result = initLs(cmdLineParams, ensureStorageDir())
-  case result.transportMode
-  of stdio:
-    result.startStdioServer()
-  of socket:
-    result.startSocketServer(cmdLineParams.port)
+  #The routes have to be in place before the server accepts a connection
+  result.initSocketServer()
 
   case result.serverMode
   of lsp:
@@ -230,6 +222,7 @@ proc main*(cmdLineParams: CommandLineParams): LanguageServer =
   of mcp:
     result.srv.registerMcpRoutes(result)
 
+  result.startSocketServer(cmdLineParams.port)
   result.registerProcMonitor()
 
 when isMainModule:

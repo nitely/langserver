@@ -1,4 +1,4 @@
-import ../[nimlangserver, ls, lstransports, utils]
+import ../[nimlangserver, ls, utils]
 import ../protocol/[enums, types]
 import
   std/[options, json, os, jsonutils, sequtils, strutils, sugar, strformat]

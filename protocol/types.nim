@@ -1,6 +1,10 @@
 import json
 import options
 import tables
+import json_serialization
+import json_serialization/std/[options as jsoptions, tables as jstables]
+
+export json_serialization, jsoptions, jstables
 
 type
   OptionalSeq*[T] = Option[seq[T]]
@@ -1162,3 +1166,18 @@ type
 
   CancelTestResult* = object
     cancelled*: bool
+
+# The wire format. `omitOptionalFields` is what keeps `none` fields out of the
+# output entirely: there are LSP clients that reject a null where they expect
+# the field to be absent (#387).
+createJsonFlavor LspConv,
+  automaticObjectSerialization = true,
+  requireAllFields = false,
+  omitOptionalFields = true,
+  allowUnknownFields = true,
+  skipNullFields = true
+
+template shouldWriteObjectField*[T](field: ref T): bool =
+  ## Same story for the plain `ref` members: a nil one means the member is not
+  ## there, it must not be written out as a null.
+  field != nil

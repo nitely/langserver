@@ -2,7 +2,6 @@ import
   macros,
   strformat,
   chronos,
-  chronos/threadsync,
   os,
   sugar,
   hashes,
@@ -16,7 +15,7 @@ import
   sets,
   ./utils,
   chronicles,
-  std/[json, streams, sequtils, setutils, times],
+  std/[json, sequtils, setutils, times],
   uri,
   json_serialization,
   json_rpc/[servers/socketserver],
@@ -39,8 +38,6 @@ const
   CHECK_PROJECT_COMMAND* = "nimlangserver.checkProject"
   FILE_CHECK_DELAY* = 1000
   LSPVersion* = getVersionFromNimble()
-  CRLF* = "\r\n"
-  CONTENT_LENGTH* = "Content-Length: "
   USE_NIM_CHECK_BY_DEFAULT* = false
   NIM_EXPAND_ARC_BY_DEFAULT* = false
   NIM_EXPAND_MACRO_BY_DEFAULT* = false
@@ -117,14 +114,7 @@ type
     mcp = "mcp"
 
   TransportMode* = enum
-    stdio = "stdio"
     socket = "socket"
-
-  ReadStdinContext* = object
-    onStdReadSignal*: ThreadSignalPtr #used by the thread to notify it read from the std
-    onMainReadSignal*: ThreadSignalPtr
-      #used by the main thread to notify it read the value from the signal
-    value*: cstring
 
   PendingRequestState* = enum
     prsOnGoing = "OnGoing"
@@ -171,23 +161,15 @@ type
     cmdLineClientProcessId*: Option[int]
     nimDumpCache*: Table[string, NimbleDumpInfo] #path to NimbleDumpInfo
     entryPoints*: seq[string]
-    responseMap*: TableRef[string, Future[JsonNode]]
     testRunProcess*: Option[AsyncProcessRef]
       #There is only one test run process at a time
-
-      #id to future. Represents the pending requests as result of calling ls.call
-    srv*: RpcSocketServer
-      #Both modes uses it to store the routes. Only actually started in socket mode
+    srv*: RpcSocketServer #Both modes use it to store the routes
     pendingRequests*: Table[uint, PendingRequest]
       #id to future. Each request is added here so we can cancel them later in the cancelRequest. Only requests, not notifications
-    case transportMode*: TransportMode
-    of socket:
-      socketTransport*: StreamTransport
-    of stdio:
-      outStream*: FileStream
-      stdinContext*: ptr ReadStdinContext
+    transportMode*: TransportMode
+    connection*: RpcConnection #The connected client, if any
     projectErrors*: seq[ProjectError]
-    lastStatusSent: JsonNode
+    lastStatusSent: string
     failTable*: Table[string, int]
       #Project file to fail count
       #List of errors (crashes) nimsuggest has had since the lsp session started
@@ -208,10 +190,10 @@ type
 
   OnExitCallback* = proc(): Future[void] {.gcsafe, raises: [].}
     #To be called when the server is shutting down
-  NotifyAction* = proc(name: string, params: JsonNode) {.gcsafe, raises: [].}
+  NotifyAction* = proc(name: string, params: JsonString) {.gcsafe, raises: [].}
     #Send a notification to the client
   CallAction* =
-    proc(name: string, params: JsonNode): Future[JsonNode] {.gcsafe, raises: [].}
+    proc(name: string, params: JsonString): Future[JsonNode] {.gcsafe, raises: [].}
     #Send a request to the client
 
 macro `%*`*(t: untyped, inputStream: untyped): untyped =
@@ -223,10 +205,9 @@ proc initLs*(params: CommandLineParams, storageDir: string): LanguageServer =
     workspaceConfiguration: Future[JsonNode](),
     filesWithDiags: initHashSet[string](),
     serverMode: params.mode.get(),
-    transportMode: params.transport.get(),
+    transportMode: params.transport.get(socket),
     openFiles: initTable[string, NlsFileInfo](),
     # idleOpenFiles: initTable[string, NlsFileInfo](),
-    responseMap: newTable[string, Future[JsonNode]](),
     storageDir: storageDir,
     cmdLineClientProcessId: params.clientProcessId,
     extensionCapabilities: LspExtensionCapability.items.toSet,
@@ -358,7 +339,10 @@ proc showMessage*(
 ) {.raises: [].} =
   try:
     proc notify() =
-      ls.notify("window/showMessage", %*{"type": typ.int, "message": message})
+      ls.notify(
+        "window/showMessage",
+        JsonString LspConv.encode(ShowMessageParams(`type`: typ.int, message: message)),
+      )
 
     let verbosity = ls.getWorkspaceConfiguration.waitFor.notificationVerbosity.get(
       NlsNotificationVerbosity.nvInfo
@@ -381,7 +365,7 @@ proc showMessage*(
 proc applyEdit*(
     ls: LanguageServer, params: ApplyWorkspaceEditParams
 ): Future[ApplyWorkspaceEditResponse] {.async.} =
-  let res = await ls.call("workspace/applyEdit", %params)
+  let res = await ls.call("workspace/applyEdit", JsonString LspConv.encode(params))
   res.to(ApplyWorkspaceEditResponse)
 
 proc toPendingRequestStatus(pr: PendingRequest): PendingRequestStatus =
@@ -424,9 +408,9 @@ proc getLspStatus*(ls: LanguageServer): NimLangServerStatus {.raises: [].} =
   result.projectErrors = ls.projectErrors
 
 proc sendStatusChanged*(ls: LanguageServer) {.raises: [].} =
-  let status = %*ls.getLspStatus()
+  let status = LspConv.encode(ls.getLspStatus())
   if status != ls.lastStatusSent:
-    ls.notify("extension/statusUpdate", status)
+    ls.notify("extension/statusUpdate", JsonString status)
     ls.lastStatusSent = status
 
 proc addProjectFileToPendingRequest*(
@@ -623,11 +607,21 @@ proc progressSupported(ls: LanguageServer): bool =
 
 proc progress*(ls: LanguageServer, token, kind: string, title = "") =
   if ls.progressSupported:
-    ls.notify("$/progress", %*{"token": token, "value": {"kind": kind, "title": title}})
+    ls.notify(
+      "$/progress",
+      JsonString LspConv.encode(
+        ProgressParams(
+          token: token, value: some %*{"kind": kind, "title": title}
+        )
+      ),
+    )
 
 proc workDoneProgressCreate*(ls: LanguageServer, token: string) =
   if ls.progressSupported:
-    discard ls.call("window/workDoneProgress/create", %ProgressParams(token: token))
+    discard ls.call(
+      "window/workDoneProgress/create",
+      JsonString LspConv.encode(ProgressParams(token: token)),
+    )
 
 proc cancelPendingFileChecks*(ls: LanguageServer, nimsuggest: Nimsuggest) =
   # stop all checks on file level if we are going to run checks on project
@@ -766,7 +760,7 @@ proc sendDiagnostics*(
       "uri": pathToUri(path),
       "diagnostics": diagnostics.map(x => x.toUtf16Pos(ls).toDiagnostic),
     }
-  ls.notify("textDocument/publishDiagnostics", %params)
+  ls.notify("textDocument/publishDiagnostics", JsonString LspConv.encode(params))
   if diagnostics.len != 0:
     ls.filesWithDiags.incl path
   else:
@@ -975,7 +969,7 @@ proc checkProject*(ls: LanguageServer, uri: string): Future[void] {.async.} =
         debug "Sending zero diags", path = path
         let params =
           PublishDiagnosticsParams %* {"uri": pathToUri(path), "diagnostics": @[]}
-        ls.notify("textDocument/publishDiagnostics", %params)
+        ls.notify("textDocument/publishDiagnostics", JsonString LspConv.encode(params))
     ls.filesWithDiags = filesWithDiags
     return
 
@@ -1020,7 +1014,7 @@ proc checkProject*(ls: LanguageServer, uri: string): Future[void] {.async.} =
       debug "Sending zero diags", path = path
       let params =
         PublishDiagnosticsParams %* {"uri": pathToUri(path), "diagnostics": @[]}
-      ls.notify("textDocument/publishDiagnostics", %params)
+      ls.notify("textDocument/publishDiagnostics", JsonString LspConv.encode(params))
   ls.filesWithDiags = filesWithDiags
 
   if nimsuggest.needsCheckProject:
@@ -1138,7 +1132,9 @@ proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
       )
     )
     ls.didChangeConfigurationRegistrationRequest =
-      ls.call("client/registerCapability", %registrationParams)
+      ls.call(
+        "client/registerCapability", JsonString LspConv.encode(registrationParams)
+      )
     ls.didChangeConfigurationRegistrationRequest.addCallback do(res: Future[JsonNode]) {.
       gcsafe
     .}:
@@ -1157,7 +1153,8 @@ proc handleConfigurationChanges*(
     if not inlayExceptionHintsConfigurationEquals(oldConfiguration, newConfiguration):
       ls.restartAllNimsuggestInstances
     debug "Sending inlayHint refresh"
-    ls.inlayHintsRefreshRequest = ls.call("workspace/inlayHint/refresh", newJNull())
+    #An empty object means no params at all
+    ls.inlayHintsRefreshRequest = ls.call("workspace/inlayHint/refresh", JsonString"{}")
 
 proc maybeRequestConfigurationFromClient*(ls: LanguageServer) =
   if ls.supportsConfigurationRequest:
@@ -1166,7 +1163,8 @@ proc maybeRequestConfigurationFromClient*(ls: LanguageServer) =
 
     ls.prevWorkspaceConfiguration = ls.workspaceConfiguration
 
-    ls.workspaceConfiguration = ls.call("workspace/configuration", %configurationParams)
+    ls.workspaceConfiguration =
+      ls.call("workspace/configuration", JsonString LspConv.encode(configurationParams))
     ls.workspaceConfiguration.addCallback do(futConfiguration: Future[JsonNode]) {.
       gcsafe
     .}:

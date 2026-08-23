@@ -1,4 +1,4 @@
-import std/[unicode, uri, strformat, os, strutils, options, json, jsonutils, sugar, net]
+import std/[unicode, uri, strformat, os, strutils, options, json, sugar, net]
 import chronos, chronicles, chronos/asyncproc
 import "$nim/compiler/pathutils"
 import json_rpc/private/jrpc_sys
@@ -259,25 +259,6 @@ proc get*[T](params: RequestParamsRx, key: string): T =
       if np.name == key:
         return np.value.string.parseJson.to(T)
   raise newException(KeyError, "Key not found")
-
-proc to*(params: RequestParamsRx, T: typedesc): T =
-  let value =
-    case params.kind
-    of rpNamed:
-      $params.toJson()
-
-    # Normally, this shouldn't happen as neither LSP nor MCP
-    # use positional params.
-    # But Copilot CLI would send no params to tools/list
-    # method which are parsed as an empty array of positional params.
-    # Since you can't parse an array into a json object,
-    # we simply ignore any positional params and parse an empty
-    # object instead.
-    of rpPositional:
-      doAssert len(params.positional) == 0
-      $newJObject()
-
-  parseJson(value).to(T)
 
 proc head*[T](xs: seq[T]): Option[T] =
   if xs.len > 0:

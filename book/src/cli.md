@@ -14,8 +14,7 @@ nimlangserver [options]
 |---|---|
 | `--lsp` | Run in LSP server mode. This is the default. |
 | `--mcp` | Run in MCP server mode. |
-| `--stdio` | Use stdio transport. This is the default for both modes. |
-| `--socket` | Use socket transport. |
+| `--socket` | Use socket transport. This is currently the only transport. |
 | `--port=<port>` | Port to listen on when using socket transport. If omitted, a free port is chosen automatically and printed to the console. |
 | `--clientProcessId=<pid>` | Exit automatically when the process with the given PID terminates. Editors pass this to tie the server lifetime to their own. |
 | `--version`, `-v` | Print version information and exit. |
@@ -24,15 +23,17 @@ nimlangserver [options]
 ## Mode and transport combinations
 
 ```bash
-nimlangserver                          # LSP over stdio (default)
-nimlangserver --lsp --socket           # LSP over socket, auto port
+nimlangserver                          # LSP over socket, auto port
 nimlangserver --lsp --socket --port=6000
 
-nimlangserver --mcp                    # MCP over stdio
-nimlangserver --mcp --socket           # MCP over socket, auto port
+nimlangserver --mcp                    # MCP over socket, auto port
 nimlangserver --mcp --socket --port=6001
 ```
 
-**stdio** is the right choice when the client launches `nimlangserver` as a subprocess (the normal case for both editors and AI agents).
+The chosen port is printed on stdout as `port=<port>` before the server starts
+listening.
 
-**socket** is useful when the server and client run in separate environments — for example, a native Windows editor connecting to a server running inside WSL, or when you want a single running server to be reachable from multiple clients.
+> **The stdio transport has been removed for the time being.** `--stdio` now
+> exits with an error. Only the socket transport is supported, so a client that
+> launches `nimlangserver` as a subprocess has to read the port off stdout and
+> connect to it.

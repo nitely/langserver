@@ -1,13 +1,36 @@
-import ../[ls, lstransports, utils]
+import ../[ls, utils]
 
 import ../protocol/types
-import std/[options, unittest, json, os, jsonutils, tables, strutils, sequtils, sugar]
+import std/[options, unittest, json, os, jsonutils, tables, strutils, sequtils, sugar, strformat]
 import json_rpc/[rpcclient]
 import chronicles
 
 #Utils
 proc fixtureUri*(path: string): string =
   result = pathToUri(getCurrentDir() / "tests" / path)
+
+const CRLF = "\r\n"
+
+proc wrapContentWithContentLength*(content: string): string =
+  ## The LSP framing, the same one `Framing.httpHeader` implements server side.
+  &"Content-Length: {content.len}{CRLF}{CRLF}{content}"
+
+proc processContentLength*(
+    transport: StreamTransport
+): Future[string] {.async: (raises: []).} =
+  try:
+    let header = await transport.readLine(sep = CRLF)
+    if not header.startsWith("Content-Length: "):
+      if header.len > 0:
+        error "No content length", header = header
+      return
+    let length = parseInt(header.split(" ")[1])
+    discard await transport.readLine(sep = CRLF) # skip the empty line
+    var res = newString(length)
+    await transport.readExactly(addr res[0], length)
+    return res
+  except CatchableError as ex:
+    error "Error reading content length", msg = ex.msg
 
 type
   NotificationRpc* = proc(params: JsonNode): Future[void] {.async.}
@@ -39,7 +62,9 @@ method call*(
   reqJson["jsonrpc"] = %"2.0"
   reqJson["id"] = %id
   reqJson["method"] = %name
-  reqJson["params"] = params
+  #A null params is not valid json-rpc, the member is left out instead
+  if not params.isNil and params.kind != JNull:
+    reqJson["params"] = params
   let reqContent = wrapContentWithContentLength($reqJson)
   var jsonBytes = reqContent
   if client.transport.isNil:
@@ -55,10 +80,9 @@ method call*(
 
 proc runRpc(client: LspSocketClient, rpc: Rpc, serverReq: JsonNode) {.async.} =
   let res = await rpc(serverReq["params"])
-  let id = serverReq["id"].jsonTo(string)
   let reqJson = newJObject()
   reqJson["jsonrpc"] = %"2.0"
-  reqJson["id"] = %id
+  reqJson["id"] = serverReq["id"]
   reqJson["result"] = res
   let reqContent = wrapContentWithContentLength($reqJson)
   discard await client.transport.write(reqContent.string)
