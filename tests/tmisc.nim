@@ -105,6 +105,56 @@ suite "Nimlangserver pending requests":
     check fut.finished
     check fut.completed
 
+suite "Nimlangserver request cancellation":
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification(
+    "window/showMessage", "extension/statusUpdate", "textDocument/publishDiagnostics",
+    "$/progress",
+  )
+
+  test "$/cancelRequest cancels a request that is still in flight":
+    # This also pins down that the transport keeps reading while a request is
+    # running: the cancellation can only be acted on if the in-flight request
+    # is not holding up the connection.
+    let initParams =
+      LspInitializeParams %* {
+        "processId": %getCurrentProcessId(),
+        "rootUri": fixtureUri("projects/hw/"),
+        "capabilities": {"window": {"workDoneProgress": true}},
+      }
+    discard waitFor client.initialize(initParams)
+
+    # A file whose project never resolves, so the handler stays parked on it
+    let uri = "file:///tmp/tcancel.nim"
+    ls.openFiles[uri] = NlsFileInfo(projectFile: newFuture[string]("never"))
+
+    let request = client.call("textDocument/definition", %positionParams(uri, 0, 0))
+    waitFor sleepAsync(200)
+
+    var id = 0'u
+    for pendingId, pending in ls.pendingRequests:
+      if pending.name == "textDocument/definition":
+        id = pendingId
+    check id != 0'u
+    check ls.pendingRequests[id].state == prsOnGoing
+
+    client.notify("$/cancelRequest", %*{"id": id.int})
+    waitFor sleepAsync(200)
+
+    check ls.pendingRequests[id].state == prsCancelled
+    check not request.finished #A cancelled request is not answered
+
+  test "notifications are not tracked as pending requests":
+    #They carry no id, so there is nothing to cancel or to report
+    let before = ls.pendingRequests.len
+    client.notify("$/setTrace", %*{"value": "verbose"})
+    waitFor sleepAsync(200)
+    check ls.pendingRequests.len == before
+
 suite "Nimlangserver idle nimsuggest cleanup":
   let cmdParams = CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
   let ls = main(cmdParams)

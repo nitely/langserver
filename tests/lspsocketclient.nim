@@ -155,10 +155,20 @@ proc connect*(client: LspSocketClient, address: string, port: Port) {.async.} =
   client.loop = processData(client)
 
 proc notify*(client: LspSocketClient, name: string, params: JsonNode) =
-  proc wrap(): Future[void] {.async.} =
-    discard await client.call(name, params)
+  ## A real notification: no id, and no response is expected.
+  let reqJson = newJObject()
+  reqJson["jsonrpc"] = %"2.0"
+  reqJson["method"] = %name
+  if not params.isNil and params.kind != JNull:
+    reqJson["params"] = params
 
-  asyncSpawn wrap()
+  proc write() {.async: (raises: []).} =
+    try:
+      discard await client.transport.write(wrapContentWithContentLength($reqJson))
+    except CatchableError as ex:
+      error "Cannot send notification", name = name, msg = ex.msg
+
+  asyncSpawn write()
 
 proc register*(client: LspSocketClient, name: string, notRpc: NotificationRpc) =
   client.notifications[name] = notRpc

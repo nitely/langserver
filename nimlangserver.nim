@@ -25,56 +25,56 @@ proc registerLspRoutes(srv: RpcSocketServer, ls: LanguageServer) =
   ) #use from ls
   srv.register(
     "textDocument/completion",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.completion, ls))),
+    wrapRpc(partial(lsp.completion, ls)),
   )
   srv.register(
     "textDocument/definition",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.definition, ls))),
+    wrapRpc(partial(lsp.definition, ls)),
   )
   srv.register(
     "textDocument/declaration",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.declaration, ls))),
+    wrapRpc(partial(lsp.declaration, ls)),
   )
   srv.register(
     "textDocument/typeDefinition",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.typeDefinition, ls))),
+    wrapRpc(partial(lsp.typeDefinition, ls)),
   )
   srv.register(
     "textDocument/documentSymbol",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.documentSymbols, ls))),
+    wrapRpc(partial(lsp.documentSymbols, ls)),
   )
   srv.register(
-    "textDocument/hover", ls.addRpcToCancellable(wrapRpc(partial(lsp.hover, ls)))
+    "textDocument/hover", wrapRpc(partial(lsp.hover, ls))
   )
   srv.register("textDocument/references", wrapRpc(partial(lsp.references, ls)))
   srv.register("textDocument/codeAction", wrapRpc(partial(lsp.codeAction, ls)))
   srv.register(
     "textDocument/prepareRename",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.prepareRename, ls))),
+    wrapRpc(partial(lsp.prepareRename, ls)),
   )
   srv.register(
-    "textDocument/rename", ls.addRpcToCancellable(wrapRpc(partial(lsp.rename, ls)))
+    "textDocument/rename", wrapRpc(partial(lsp.rename, ls))
   )
   srv.register(
     "textDocument/inlayHint",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.inlayHint, ls))),
+    wrapRpc(partial(lsp.inlayHint, ls)),
   )
   srv.register(
     "textDocument/signatureHelp",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.signatureHelp, ls))),
+    wrapRpc(partial(lsp.signatureHelp, ls)),
   )
   srv.register(
     "textDocument/formatting",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.formatting, ls))),
+    wrapRpc(partial(lsp.formatting, ls)),
   )
   srv.register("workspace/executeCommand", wrapRpc(partial(lsp.executeCommand, ls)))
   srv.register(
     "workspace/symbol",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.workspaceSymbol, ls))),
+    wrapRpc(partial(lsp.workspaceSymbol, ls)),
   )
   srv.register(
     "textDocument/documentHighlight",
-    ls.addRpcToCancellable(wrapRpc(partial(lsp.documentHighlight, ls))),
+    wrapRpc(partial(lsp.documentHighlight, ls)),
   )
   srv.register("shutdown", wrapRpc(partial(lsp.shutdown, ls)))
   srv.register("exit", wrapRpc(partial(lsp.exit, (ls: ls, onExit: ls.onExit))))

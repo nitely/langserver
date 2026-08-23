@@ -124,7 +124,7 @@ type
   PendingRequest* = object
     id*: uint
     name*: string
-    request*: Future[JsonString]
+    request*: FutureBase
     projectFile*: Option[string]
     startTime*: DateTime
     endTime*: DateTime

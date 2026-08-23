@@ -8,8 +8,8 @@
 ##
 ## * `wrapRpc` adapts the handlers in `routes/` to `RpcProc`, since they take
 ##   the whole params object rather than one argument per member.
-## * `addRpcToCancellable` records in-flight requests so `$/cancelRequest` can
-##   cancel them.
+## * `route` dispatches each request off the read loop and records it, which
+##   is what makes `$/cancelRequest` work.
 ## * `initActions` implements `ls.notify` / `ls.call` / `ls.onExit`.
 
 import json_rpc/[servers/socketserver, clients/socketclient]
@@ -53,86 +53,95 @@ proc wrapRpc*[T](fn: proc(params: T): Future[auto] {.gcsafe, raises: [].}): Rpc 
       let res = await fn(val)
       return JsonString(LspConv.encode(res))
 
-proc wrapRpc*[T](
-    fn: proc(params: T, id: int): Future[auto] {.gcsafe, raises: [].}
-): Rpc =
-  return proc(params: RequestParamsRx): Future[JsonString] {.gcsafe, async.} =
-    let val = LspConv.decode(params.toJson, T)
-    var idRequest = 0
-    try:
-      idRequest = get[int](params, "idRequest")
-    except KeyError:
-      error "IdRequest not found in the request params", params = params
-    let res = await fn(val, idRequest)
-    return JsonString(LspConv.encode(res))
-
-proc addRpcToCancellable*(ls: LanguageServer, rpc: Rpc): Rpc =
-  return proc(params: RequestParamsRx): Future[JsonString] {.gcsafe, raises: [].} =
-    try:
-      let idRequest = get[uint](params, "idRequest")
-      let name = get[string](params, "method")
-      ls.pendingRequests[idRequest] =
-        PendingRequest(id: idRequest, name: name, startTime: now(), state: prsOnGoing)
-      ls.sendStatusChanged
-      var fut = rpc(params)
-      ls.pendingRequests[idRequest].request = fut
-        #we need to add it before because the rpc may access to the pendingRequest to set the projectFile
-      fut.addCallback proc(d: pointer) =
-        try:
-          ls.pendingRequests[idRequest].state = prsComplete
-          ls.pendingRequests[idRequest].endTime = now()
-          ls.sendStatusChanged
-        except KeyError:
-          error "Error completing pending requests. Id not found in pending requests"
-      return fut
-    except KeyError as ex:
-      error "IdRequest not found in the request params"
-      writeStackTrace(ex)
-    except Exception as ex:
-      error "Error adding request to cancellable requests"
-      writeStackTrace(ex)
-
 #
 # Server
 #
 
-proc addLspParams(req: var RequestRx2) =
-  ## An `Rpc` only receives the params, but `wrapRpc` and
-  ## `addRpcToCancellable` also need the request id and the method name, so
-  ## pass them along as extra params. They are ignored when decoding the
-  ## handler's own params.
-  if req.params.kind != rpNamed:
+proc trackRequest(
+    ls: LanguageServer, request: RequestBatchRx, fut: FutureBase
+) {.raises: [].} =
+  ## Records an in-flight request so that `$/cancelRequest` can cancel it and
+  ## the `extension/status` view can show what the server is busy with.
+  if request.kind != rbkSingle:
     return
+  let req = request.single
   let id = req.id.valueOr:
-    return
+    return #A notification, there is nothing to cancel or report
   if id.kind != riNumber:
     return
-  req.params.named.add ParamDescNamed(name: "idRequest", value: JsonString($id.num))
-  req.params.named.add ParamDescNamed(
-    name: "method", value: JsonString(escapeJson(req.meth))
-  )
 
-func withLspParams(request: sink RequestBatchRx): RequestBatchRx =
-  result = request
-  case result.kind
-  of rbkSingle:
-    result.single.addLspParams()
-  of rbkMany:
-    for req in result.many.mitems:
-      req.addLspParams()
+  let reqId = id.num.uint
+  ls.pendingRequests[reqId] = PendingRequest(
+    id: reqId, name: req.meth, startTime: now(), state: prsOnGoing, request: fut
+  )
+  ls.sendStatusChanged
+
+  #Which project the request is waiting on, for the status view
+  if req.params.kind == rpNamed:
+    for np in req.params.named:
+      if np.name == "textDocument":
+        try:
+          let uri = LspConv.decode(np.value.string, TextDocumentIdentifier).uri
+          asyncSpawn ls.addProjectFileToPendingRequest(reqId, uri)
+        except CatchableError as ex:
+          error "Cannot read the request textDocument", err = ex.msg
+        break
+
+  fut.addCallback proc(_: pointer) =
+    try:
+      ls.pendingRequests[reqId].state = prsComplete
+      ls.pendingRequests[reqId].endTime = now()
+      ls.sendStatusChanged
+    except KeyError:
+      error "Cannot complete the pending request, id not found", id = reqId
+
+proc respond(
+    ls: LanguageServer, conn: RpcSocketClient, handled: Future[seq[byte]].Raising([])
+) {.async: (raises: []).} =
+  let res =
+    try:
+      await handled
+    except CancelledError:
+      #Cancelled through `$/cancelRequest`, the client is no longer waiting
+      return
+  if res.len == 0: #A notification, the client expects no answer
+    return
+  try:
+    await conn.send(res)
+  except CancelledError:
+    discard
+  except JsonRpcError as ex:
+    error "Cannot send response", err = ex.msg
+
+proc route(
+    ls: LanguageServer, conn: RpcSocketClient, request: RequestBatchRx
+): Future[seq[byte]] {.async: (raises: [], raw: true).} =
+  ## json-rpc awaits whatever this returns before it reads the next message off
+  ## the connection, so hand back an empty response straight away and let the
+  ## request run on its own. Handling it here instead would stall the whole
+  ## connection for the duration, and `$/cancelRequest` could never be read
+  ## while the request it cancels is still running.
+  let handled = ls.srv.router.route(request)
+  ls.trackRequest(request, handled)
+  asyncSpawn ls.respond(conn, handled)
+
+  result = Future[seq[byte]].Raising([]).init(
+    "lstransport.route", {FutureFlag.OwnCancelSchedule}
+  )
+  result.complete(default(seq[byte]))
 
 proc processClient(
     ls: LanguageServer, server: StreamServer, transport: StreamTransport
 ) {.async: (raises: []), gcsafe.} =
-  let
-    remote = transport.remoteAddress2().valueOr(default(TransportAddress))
-    conn = RpcSocketClient.new(
-      framing = Framing.httpHeader(),
-      router = proc(
-          request: RequestBatchRx
-      ): Future[seq[byte]] {.async: (raises: [], raw: true).} =
-        ls.srv.router.route(request.withLspParams),
-    )
+  let remote = transport.remoteAddress2().valueOr(default(TransportAddress))
+  var conn: RpcSocketClient #Captured by the router, assigned right below
+  conn = RpcSocketClient.new(
+    framing = Framing.httpHeader(),
+    router = proc(
+        request: RequestBatchRx
+    ): Future[seq[byte]] {.async: (raises: [], raw: true).} =
+      ls.route(conn, request),
+  )
 
   debug "Client connected", address = remote
   ls.srv.connections.incl(conn)
@@ -151,22 +160,10 @@ proc initActions*(ls: LanguageServer) =
     ls.srv.close()
 
   let notifyAction: NotifyAction = proc(name: string, params: JsonString) =
-    let conn = ls.connection
-    if conn.isNil:
-      return
     let reqParams = params.toParams.valueOr:
       error "Cannot encode the notification params", name = name, err = error
       return
-
-    proc send() {.async: (raises: []).} =
-      try:
-        await conn.notify(name, reqParams)
-      except CancelledError:
-        discard
-      except JsonRpcError as ex:
-        error "Cannot send notification", name = name, err = ex.msg
-
-    asyncSpawn send()
+    asyncSpawn ls.srv.notify(name, reqParams)
 
   let callAction: CallAction = proc(name: string, params: JsonString): Future[JsonNode] =
     let fut = newFuture[JsonNode]("ls.call")
