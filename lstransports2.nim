@@ -16,7 +16,7 @@ import json_rpc/[servers/socketserver, clients/socketclient]
 import chronicles, chronos
 import std/times
 import ls, utils
-import protocol/types
+import protocol/[enums, types]
 
 logScope:
   topics = "lstransport"
@@ -45,13 +45,22 @@ func toParams(params: JsonString): Result[RequestParamsTx, string] =
 proc wrapRpc*[T](fn: proc(params: T): Future[auto] {.gcsafe, raises: [].}): Rpc =
   return proc(params: RequestParamsRx): Future[JsonString] {.gcsafe, async.} =
     let val = LspConv.decode(params.toJson, T)
-    when typeof(fn(val)) is Future[void]: #Notification
-      await fn(val)
-      #The router only answers messages carrying an id, so this is dropped
-      return JsonString("null")
-    else:
-      let res = await fn(val)
-      return JsonString(LspConv.encode(res))
+    try:
+      when typeof(fn(val)) is Future[void]: #Notification
+        await fn(val)
+        #The router only answers messages carrying an id, so this is dropped
+        return JsonString("null")
+      else:
+        let res = await fn(val)
+        return JsonString(LspConv.encode(res))
+    except CancelledError:
+      #`$/cancelRequest`. Answered with the code LSP reserves for it, otherwise
+      #json-rpc reports the cancellation as an internal server error. The code
+      #is inside the range json-rpc asks applications to stay out of, but it is
+      #the one the LSP spec assigns and clients match on it.
+      raise (ref ApplicationError)(
+        code: ord(RequestCancelled), msg: "Request cancelled"
+      )
 
 #
 # Server
@@ -102,7 +111,8 @@ proc respond(
     try:
       await handled
     except CancelledError:
-      #Cancelled through `$/cancelRequest`, the client is no longer waiting
+      #`wrapRpc` turns a cancelled handler into a response, so this only
+      #happens if the routing itself is cancelled and nobody is owed an answer
       return
   if res.len == 0: #A notification, the client expects no answer
     return

@@ -146,7 +146,10 @@ suite "Nimlangserver request cancellation":
     waitFor sleepAsync(200)
 
     check ls.pendingRequests[id].state == prsCancelled
-    check not request.finished #A cancelled request is not answered
+
+    #The client is answered, so that it stops waiting on the request
+    check request.failed
+    check "-32800" in request.error.msg
 
   test "notifications are not tracked as pending requests":
     #They carry no id, so there is nothing to cancel or to report
