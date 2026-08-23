@@ -160,10 +160,23 @@ proc initActions*(ls: LanguageServer) =
     ls.srv.close()
 
   let notifyAction: NotifyAction = proc(name: string, params: JsonString) =
+    #Not `ls.srv.notify`, that one goes out to every connected client
+    let conn = ls.connection
+    if conn.isNil:
+      return
     let reqParams = params.toParams.valueOr:
       error "Cannot encode the notification params", name = name, err = error
       return
-    asyncSpawn ls.srv.notify(name, reqParams)
+
+    proc send() {.async: (raises: []).} =
+      try:
+        await conn.notify(name, reqParams)
+      except CancelledError:
+        discard
+      except JsonRpcError as ex:
+        error "Cannot send notification", name = name, err = ex.msg
+
+    asyncSpawn send()
 
   let callAction: CallAction = proc(name: string, params: JsonString): Future[JsonNode] =
     let fut = newFuture[JsonNode]("ls.call")
