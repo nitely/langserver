@@ -993,8 +993,11 @@ proc didClose*(
 proc didOpen*(
     ls: LanguageServer, params: DidOpenTextDocumentParams
 ): Future[void] {.async.} =
+  #Register before yielding, requests are handled concurrently and one that
+  #follows this notification has to be able to see the file
+  ls.registerOpenFile(params.textDocument)
   await ls.nimsuggestInit
-  await ls.didOpenFile(params.textDocument)
+  await ls.setupOpenFile(params.textDocument)
 
 proc didChangeConfiguration*(
     ls: LanguageServer, conf: JsonNode

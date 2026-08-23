@@ -839,6 +839,10 @@ proc tryGetNimsuggest*(
 
 proc checkFile*(ls: LanguageServer, uri: string): Future[void] {.raises: [], gcsafe.}
 
+proc didOpenFile*(
+  ls: LanguageServer, textDocument: TextDocumentItem
+): Future[void] {.raises: [], gcsafe.}
+
 proc didCloseFile*(ls: LanguageServer, uri: string): Future[void] {.async.} =
   debug "Closed the following document:", uri = uri
 
@@ -857,9 +861,12 @@ proc makeIdleFile*(ls: LanguageServer, file: NlsFileInfo): Future[void] {.async.
 
 proc getProjectFile*(fileUri: string, ls: LanguageServer): Future[string] {.async.}
 
-proc didOpenFile*(
-    ls: LanguageServer, textDocument: TextDocumentItem
-): Future[void] {.async.} =
+proc registerOpenFile*(ls: LanguageServer, textDocument: TextDocumentItem) =
+  ## Everything about opening a file that another request can observe: the
+  ## `openFiles` entry and the stash file holding the contents. Deliberately
+  ## free of `await`, so a request arriving right behind a
+  ## `textDocument/didOpen` cannot miss the file (`tryGetNimsuggest` answers
+  ## nothing at all for an uri it does not know).
   with textDocument:
     debug "New document opened for URI:", uri = uri
     let
@@ -876,18 +883,24 @@ proc didOpenFile*(
     if uri in ls.idleOpenFiles:
       ls.idleOpenFiles.del(uri)
 
-    let projectFile = await projectFileFuture
+    for line in text.splitLines:
+      ls.openFiles[uri].fingerTable.add line.createUTFMapping()
+      file.writeLine line
+    file.close()
+
+proc setupOpenFile*(
+    ls: LanguageServer, textDocument: TextDocumentItem
+): Future[void] {.async.} =
+  ## The rest of opening a file, once `registerOpenFile` has made it visible:
+  ## get a nimsuggest for it and open the project file it belongs to.
+  with textDocument:
+    let projectFile = await ls.openFiles[uri].projectFile
     debug "Document associated with the following projectFile",
       uri = uri, projectFile = projectFile
     if not ls.projectFiles.hasKey(projectFile):
       debug "Will create nimsuggest for this file", uri = uri
       ls.createOrRestartNimsuggest(projectFile, uri)
 
-    for line in text.splitLines:
-      if uri in ls.openFiles:
-        ls.openFiles[uri].fingerTable.add line.createUTFMapping()
-        file.writeLine line
-    file.close()
     let ns = await ls.tryGetNimSuggest(uri)
     if ns.isSome:
       discard ls.warnIfUnknown(ns.get(), uri, projectFile)
@@ -902,6 +915,12 @@ proc didOpenFile*(
 
       debug "Opening project file", uri = projectFile, file = uri
     ls.showMessage(fmt "Opening {uri}", MessageType.Info)
+
+proc didOpenFile*(
+    ls: LanguageServer, textDocument: TextDocumentItem
+): Future[void] {.async.} =
+  ls.registerOpenFile(textDocument)
+  await ls.setupOpenFile(textDocument)
 
 proc tryGetNimsuggest*(
     ls: LanguageServer, uri: string

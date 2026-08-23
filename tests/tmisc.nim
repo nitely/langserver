@@ -155,6 +155,39 @@ suite "Nimlangserver request cancellation":
     waitFor sleepAsync(200)
     check ls.pendingRequests.len == before
 
+suite "Nimlangserver didOpen visibility":
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification(
+    "window/showMessage", "extension/statusUpdate", "textDocument/publishDiagnostics",
+    "$/progress",
+  )
+
+  test "didOpen makes the file visible before it yields":
+    # Requests are handled concurrently, and didOpen parks on ls.nimsuggestInit
+    # before doing any real work. Unless the file is registered synchronously, a
+    # request dispatched while didOpen is parked hits `uri notin ls.openFiles`
+    # and answers nothing for a file the editor just opened.
+    let initParams =
+      LspInitializeParams %* {
+        "processId": %getCurrentProcessId(),
+        "rootUri": fixtureUri("projects/hw/"),
+        "capabilities": {"window": {"workDoneProgress": true}},
+      }
+    discard waitFor client.initialize(initParams)
+
+    ls.nimsuggestInit = newFuture[void]("parked") #didOpen cannot get past this
+    let file = "projects/hw/hw.nim"
+    client.notify("textDocument/didOpen", %createDidOpenParams(file))
+    waitFor sleepAsync(200)
+
+    let uri = fixtureUri(file)
+    check uri in ls.openFiles #The entry the readers look for
+    check ls.openFiles[uri].fingerTable.len > 0 #The contents were stashed too
+
 suite "Nimlangserver idle nimsuggest cleanup":
   let cmdParams = CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
   let ls = main(cmdParams)
