@@ -38,7 +38,7 @@ func toParams(params: JsonString): Result[RequestParamsTx, string] =
   ## The inverse of `toJson`. An empty object means no params at all: json-rpc
   ## leaves the member out of the message.
   try:
-    ok JrpcSys.decode(params.string, RequestParamsRx).toTx
+    ok JrpcSys.decode(params, RequestParamsRx).toTx
   except CatchableError as ex:
     err ex.msg
 
@@ -90,7 +90,7 @@ proc trackRequest(
     for np in req.params.named:
       if np.name == "textDocument":
         try:
-          let uri = LspConv.decode(np.value.string, TextDocumentIdentifier).uri
+          let uri = LspConv.decode(np.value, TextDocumentIdentifier).uri
           asyncSpawn ls.addProjectFileToPendingRequest(reqId, uri)
         except CatchableError as ex:
           error "Cannot read the request textDocument", err = ex.msg
@@ -209,7 +209,7 @@ proc initActions*(ls: LanguageServer) =
     proc call() {.async: (raises: []).} =
       try:
         let res = await conn.call(name, reqParams)
-        fut.complete(LspConv.decode(res.string, JsonNode))
+        fut.complete(LspConv.decode(res, JsonNode))
       except CatchableError as ex:
         error "Call to the client failed", name = name, err = ex.msg
         fut.fail ex

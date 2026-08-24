@@ -169,7 +169,7 @@ type
     transportMode*: TransportMode
     connection*: RpcConnection #The connected client, if any
     projectErrors*: seq[ProjectError]
-    lastStatusSent: string
+    lastStatusSent: JsonString
     failTable*: Table[string, int]
       #Project file to fail count
       #List of errors (crashes) nimsuggest has had since the lsp session started
@@ -408,9 +408,9 @@ proc getLspStatus*(ls: LanguageServer): NimLangServerStatus {.raises: [].} =
   result.projectErrors = ls.projectErrors
 
 proc sendStatusChanged*(ls: LanguageServer) {.raises: [].} =
-  let status = LspConv.encode(ls.getLspStatus())
+  let status = JsonString LspConv.encode(ls.getLspStatus())
   if status != ls.lastStatusSent:
-    ls.notify("extension/statusUpdate", JsonString status)
+    ls.notify("extension/statusUpdate", status)
     ls.lastStatusSent = status
 
 proc addProjectFileToPendingRequest*(
