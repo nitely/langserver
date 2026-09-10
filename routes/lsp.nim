@@ -112,7 +112,7 @@ proc initialize*(
     rootPath = ls.lspInitializeParams.getRootPath
 
   ls.lspServerCapabilities = result.capabilities
-  ls.nimSuggestInit = ls.initNimsuggestInstances(rootPath)
+  ls.nimsuggestInit = ls.initNimsuggestInstances(rootPath)
 
 proc toCompletionItem(suggest: Suggest): CompletionItem =
   with suggest:
@@ -125,10 +125,9 @@ proc toCompletionItem(suggest: Suggest): CompletionItem =
       }
 
 proc completion*(
-    ls: LanguageServer, params: CompletionParams, id: int
+    ls: LanguageServer, params: CompletionParams
 ): Future[seq[CompletionItem]] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone():
       return @[]
@@ -153,10 +152,9 @@ proc toLocation*(suggest: Suggest): Location =
     Location %* {"uri": pathToUri(suggest.filepath), "range": toLabelRange(suggest)}
 
 proc definition*(
-    ls: LanguageServer, params: TextDocumentPositionParams, id: int
+    ls: LanguageServer, params: TextDocumentPositionParams
 ): Future[seq[Location]] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let ns = await ls.tryGetNimsuggest(uri)
     if ns.isNone:
       return @[]
@@ -169,10 +167,9 @@ proc definition*(
       .map(x => x.toUtf16Pos(ls).toLocation)
 
 proc declaration*(
-    ls: LanguageServer, params: TextDocumentPositionParams, id: int
+    ls: LanguageServer, params: TextDocumentPositionParams
 ): Future[seq[Location]] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let ns = await ls.tryGetNimsuggest(uri)
     if ns.isNone:
       return @[]
@@ -268,7 +265,7 @@ proc extensionSuggest*(
     ls.showMessage(fmt "Restarting nimsuggest {projectFile}", MessageType.Info)
     project.errorCallback = none(ProjectCallback)
     project.stop()
-    ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
     ls.sendStatusChanged()
 
   case params.action
@@ -287,10 +284,9 @@ proc extensionSuggest*(
     SuggestResult()
 
 proc typeDefinition*(
-    ls: LanguageServer, params: TextDocumentPositionParams, id: int
+    ls: LanguageServer, params: TextDocumentPositionParams
 ): Future[seq[Location]] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let ns = await ls.tryGetNimSuggest(uri)
     if ns.isNone:
       return @[]
@@ -312,10 +308,9 @@ proc toSymbolInformation*(suggest: Suggest): SymbolInformation =
       }
 
 proc documentSymbols*(
-    ls: LanguageServer, params: DocumentSymbolParams, id: int
+    ls: LanguageServer, params: DocumentSymbolParams
 ): Future[seq[SymbolInformation]] {.async.} =
   let uri = params.textDocument.uri
-  asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
   let ns = await ls.tryGetNimsuggest(uri)
   if ns.isSome:
     ns.get().outline(uriToPath(uri), ls.uriToStash(uri)).await().map(
@@ -373,11 +368,10 @@ proc toMarkupContent(suggest: Suggest): MarkupContent =
     result.value.add toMdLinks(suggest.doc)
 
 proc hover*(
-    ls: LanguageServer, params: HoverParams, id: int
+    ls: LanguageServer, params: HoverParams
 ): Future[Option[Hover]] {.async.} =
   with (params.position, params.textDocument):
     let config = await ls.getWorkspaceConfiguration()
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone:
       return none(Hover)
@@ -445,10 +439,9 @@ proc references*(
       )
 
 proc prepareRename*(
-    ls: LanguageServer, params: PrepareRenameParams, id: int
+    ls: LanguageServer, params: PrepareRenameParams
 ): Future[JsonNode] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone:
       return newJNull()
@@ -467,7 +460,7 @@ proc prepareRename*(
     return newJNull()
 
 proc rename*(
-    ls: LanguageServer, params: RenameParams, id: int
+    ls: LanguageServer, params: RenameParams
 ): Future[WorkspaceEdit] {.async.} =
   # We reuse the references command as to not duplicate it  
   let references = await ls.references(
@@ -541,11 +534,10 @@ proc toInlayHint(suggest: SuggestInlayHint, configuration: NlsConfig): InlayHint
     )
 
 proc inlayHint*(
-    ls: LanguageServer, params: InlayHintParams, id: int
+    ls: LanguageServer, params: InlayHintParams
 ): Future[seq[InlayHint]] {.async.} =
   debug "inlayHint received..."
   with (params.range, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let
       configuration = ls.getWorkspaceConfiguration.await()
       nimsuggest = await ls.tryGetNimsuggest(uri)
@@ -621,7 +613,7 @@ proc executeCommand*(
   case params.command
   of RESTART_COMMAND:
     debug "Restarting nimsuggest", projectFile = projectFile
-    ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
   of CHECK_PROJECT_COMMAND:
     debug "Checking project", projectFile = projectFile
     ls.checkProject(projectFile.pathToUri).traceAsyncErrors
@@ -662,7 +654,7 @@ proc toSignatureInformation(suggest: Suggest): SignatureInformation =
     }
 
 proc signatureHelp*(
-    ls: LanguageServer, params: SignatureHelpParams, id: int
+    ls: LanguageServer, params: SignatureHelpParams
 ): Future[Option[SignatureHelp]] {.async.} =
   #TODO handle prev signature
   # if params.context.activeSignatureHelp.isSome:
@@ -679,7 +671,6 @@ proc signatureHelp*(
     #Some clients doesnt support signatureHelp
     return none[SignatureHelp]()
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone:
       return none[SignatureHelp]()
@@ -743,17 +734,16 @@ proc format*(
   some TextEdit(range: fullRange, newText: formattedText)
 
 proc formatting*(
-    ls: LanguageServer, params: DocumentFormattingParams, id: int
+    ls: LanguageServer, params: DocumentFormattingParams
 ): Future[seq[TextEdit]] {.async.} =
   with (params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     debug "Received Formatting request "
     let formatTextEdit = await ls.format(getNphPath().get(), uri)
     if formatTextEdit.isSome:
       return @[formatTextEdit.get]
 
 proc workspaceSymbol*(
-    ls: LanguageServer, params: WorkspaceSymbolParams, id: int
+    ls: LanguageServer, params: WorkspaceSymbolParams
 ): Future[seq[SymbolInformation]] {.async.} =
   if ls.lastNimsuggest != nil:
     let
@@ -765,10 +755,9 @@ proc toDocumentHighlight(suggest: Suggest): DocumentHighlight =
   return DocumentHighlight %* {"range": toLabelRange(suggest)}
 
 proc documentHighlight*(
-    ls: LanguageServer, params: TextDocumentPositionParams, id: int
+    ls: LanguageServer, params: TextDocumentPositionParams
 ): Future[seq[DocumentHighlight]] {.async.} =
   with (params.position, params.textDocument):
-    asyncSpawn ls.addProjectFileToPendingRequest(id.uint, uri)
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone:
       return @[]
@@ -900,7 +889,7 @@ proc cancelTest*(
 proc initialized*(ls: LanguageServer, _: JsonNode): Future[void] {.async.} =
   debug "Client initialized."
   maybeRegisterCapabilityDidChangeConfiguration(ls)
-  maybeRequestConfigurationFromClient(ls)
+  await maybeRequestConfigurationFromClient(ls)
 
 proc cancelRequest*(ls: LanguageServer, params: CancelParams): Future[void] {.async.} =
   if params.id.isSome:
@@ -1004,15 +993,18 @@ proc didClose*(
 proc didOpen*(
     ls: LanguageServer, params: DidOpenTextDocumentParams
 ): Future[void] {.async.} =
+  #Register before yielding, requests are handled concurrently and one that
+  #follows this notification has to be able to see the file
+  ls.registerOpenFile(params.textDocument)
   await ls.nimsuggestInit
-  await ls.didOpenFile(params.textDocument)
+  await ls.setupOpenFile(params.textDocument)
 
 proc didChangeConfiguration*(
     ls: LanguageServer, conf: JsonNode
 ): Future[void] {.async.} =
   debug "Changed configuration: ", conf = $conf
   if ls.usePullConfigurationModel:
-    ls.maybeRequestConfigurationFromClient
+    await ls.maybeRequestConfigurationFromClient()
   else:
     if ls.workspaceConfiguration.finished:
       let
@@ -1020,4 +1012,4 @@ proc didChangeConfiguration*(
         newConfiguration = parseWorkspaceConfiguration(conf)
       ls.workspaceConfiguration = newFuture[JsonNode]()
       ls.workspaceConfiguration.complete(conf)
-      handleConfigurationChanges(ls, oldConfiguration, newConfiguration)
+      await handleConfigurationChanges(ls, oldConfiguration, newConfiguration)

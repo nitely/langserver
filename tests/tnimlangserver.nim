@@ -1,5 +1,5 @@
 import ../[
-  nimlangserver, ls, lstransports, utils
+  nimlangserver, ls, utils
 ]
 import ../protocol/[enums, types]
 import std/[options, json, os, jsonutils, sequtils, strutils, sugar, strformat]
