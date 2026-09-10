@@ -889,7 +889,7 @@ proc cancelTest*(
 proc initialized*(ls: LanguageServer, _: JsonNode): Future[void] {.async.} =
   debug "Client initialized."
   maybeRegisterCapabilityDidChangeConfiguration(ls)
-  maybeRequestConfigurationFromClient(ls)
+  await maybeRequestConfigurationFromClient(ls)
 
 proc cancelRequest*(ls: LanguageServer, params: CancelParams): Future[void] {.async.} =
   if params.id.isSome:
@@ -1004,7 +1004,7 @@ proc didChangeConfiguration*(
 ): Future[void] {.async.} =
   debug "Changed configuration: ", conf = $conf
   if ls.usePullConfigurationModel:
-    ls.maybeRequestConfigurationFromClient
+    await ls.maybeRequestConfigurationFromClient()
   else:
     if ls.workspaceConfiguration.finished:
       let
@@ -1012,4 +1012,4 @@ proc didChangeConfiguration*(
         newConfiguration = parseWorkspaceConfiguration(conf)
       ls.workspaceConfiguration = newFuture[JsonNode]()
       ls.workspaceConfiguration.complete(conf)
-      handleConfigurationChanges(ls, oldConfiguration, newConfiguration)
+      await handleConfigurationChanges(ls, oldConfiguration, newConfiguration)

@@ -5,6 +5,7 @@ nimcache/
 *.log
 *.exe
 tests/all
+tests/nimlangserver_lifecycle
 /nimlangserver
 nimble.develop
 nimble.paths

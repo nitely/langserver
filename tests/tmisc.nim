@@ -303,3 +303,69 @@ suite "Nimlangserver single client":
   test "The first client is still served":
     let res = waitFor client.call("shutdown", newJObject()).wait(10.seconds)
     check res.kind == JNull
+
+suite "Nimlangserver nimsuggest creation":
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification(
+    "window/showMessage", "window/workDoneProgress/create", "workspace/configuration",
+    "extension/statusUpdate", "textDocument/publishDiagnostics", "$/progress",
+  )
+
+  let initParams =
+    LspInitializeParams %* {
+      "processId": %getCurrentProcessId(),
+      "rootUri": fixtureUri("projects/hw/"),
+      "capabilities": {
+        "window": {"workDoneProgress": true},
+        "workspace":
+          {"configuration": true, "inlayHint": {"refreshSupport": true}},
+      },
+    }
+  discard waitFor client.initialize(initParams)
+
+  let hwProjectFile = uriToPath(fixtureUri("projects/hw/hw.nim"))
+  let hwUri = fixtureUri("projects/hw/hw.nim")
+
+  test "Concurrent creations for the same project are deduplicated":
+    let first = ls.createOrRestartNimsuggest(hwProjectFile, hwUri)
+    let second = ls.createOrRestartNimsuggest(hwProjectFile, hwUri)
+    check ls.nimsuggestCreations.len == 1
+
+    waitFor allFutures(first, second).wait(60.seconds)
+    check ls.nimsuggestCreations.len == 0
+    check ls.projectFiles.len == 1
+    check not ls.projectFiles[hwProjectFile].process.isNil
+
+  test "handleConfigurationChanges restarts nimsuggest before it returns":
+    let previousPid = ls.projectFiles[hwProjectFile].process.pid
+    let oldConfiguration = NlsConfig(
+      inlayHints: some NlsInlayHintsConfig(
+        exceptionHints: some NlsInlayExceptionHintsConfig(enable: some true)
+      )
+    )
+    let newConfiguration = NlsConfig(
+      inlayHints: some NlsInlayHintsConfig(
+        exceptionHints: some NlsInlayExceptionHintsConfig(enable: some false)
+      )
+    )
+    waitFor ls.handleConfigurationChanges(oldConfiguration, newConfiguration).wait(
+      60.seconds
+    )
+    check ls.projectFiles[hwProjectFile].process.pid != previousPid
+    check not ls.inlayHintsRefreshRequest.isNil
+
+  # Not enabled: the ordering below is only reachable through the nimsuggest
+  # timeout callback, which needs a nimsuggest that stops answering. Left here
+  # because the restart used to be spawned with the status update sent before
+  # it, so the status reported the instance that was being replaced.
+  #
+  # test "The timeout restart sends the status update after the restart":
+  #   let previousPid = ls.projectFiles[hwProjectFile].process.pid
+  #   <make the nimsuggest for hwProjectFile time out>
+  #   check waitFor client.waitForNotification("extension/statusUpdate", proc(
+  #     json: JsonNode): bool =
+  #       json{"nimsuggestInstances"}[0]{"port"}.getInt != previousPid)

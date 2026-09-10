@@ -1045,9 +1045,9 @@ proc checkProject*(ls: LanguageServer, uri: string): Future[void] {.async.} =
       debug "Running delayed check project...", uri = uri
       traceAsyncErrors ls.checkProject(uri)
 
-proc onErrorCallbackAsync(
+proc onErrorCallback(
     args: (LanguageServer, string), project: Project
-): Future[void] {.async: (raises: []).} =
+): Future[void] {.async: (raises: []), gcsafe.} =
   let
     ls = args[0]
     uri = args[1]
@@ -1076,9 +1076,6 @@ proc onErrorCallbackAsync(
       )
       ls.sendStatusChanged()
 
-proc onErrorCallback(args: (LanguageServer, string), project: Project) =
-  asyncSpawn onErrorCallbackAsync(args, project)
-
 proc createOrRestartNimsuggestImpl(
     ls: LanguageServer, projectFile: string, uri = ""
 ): Future[void] {.async: (raises: []), gcsafe.} =
@@ -1090,14 +1087,16 @@ proc createOrRestartNimsuggestImpl(
       (nimsuggestPath, version) =
         await ls.getNimSuggestPathAndVersion(configuration, workingDir)
       timeout = configuration.timeout.get(REQUEST_TIMEOUT)
-      restartCallback = proc(ns: Nimsuggest) {.gcsafe, raises: [].} =
+      restartCallback = proc(
+          ns: Nimsuggest
+      ): Future[void] {.async: (raises: []), gcsafe.} =
         warn "Restarting the server due to requests being to slow",
           projectFile = projectFile
         ls.showMessage(
           fmt "Restarting nimsuggest for file {projectFile} due to timeout.",
           MessageType.Warning,
         )
-        asyncSpawn ls.createOrRestartNimsuggest(projectFile, uri)
+        await ls.createOrRestartNimsuggest(projectFile, uri)
         ls.sendStatusChanged()
       errorCallback = partial(onErrorCallback, (ls, uri))
 
@@ -1155,10 +1154,12 @@ proc createOrRestartNimsuggest*(
   if ls.nimsuggestCreations.getOrDefault(projectFile) == creation:
     ls.nimsuggestCreations.del(projectFile)
 
-proc restartAllNimsuggestInstances(ls: LanguageServer) =
+proc restartAllNimsuggestInstances(
+    ls: LanguageServer
+): Future[void] {.async: (raises: []).} =
   debug "Restarting all nimsuggest instances"
-  for projectFile in ls.projectFiles.keys:
-    asyncSpawn ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+  for projectFile in ls.projectFiles.keys.toSeq:
+    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
 
 proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
   if ls.requiresDynamicRegistrationForDidChangeConfiguration:
@@ -1184,7 +1185,7 @@ proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
 
 proc handleConfigurationChanges*(
     ls: LanguageServer, oldConfiguration, newConfiguration: NlsConfig
-) =
+): Future[void] {.async: (raises: []).} =
   if ls.lspClientCapabilities.workspace.isSome and
       ls.lspClientCapabilities.workspace.get.inlayHint.isSome and
       ls.lspClientCapabilities.workspace.get.inlayHint.get.refreshSupport.get(false) and
@@ -1192,33 +1193,37 @@ proc handleConfigurationChanges*(
     # toggling the exception hints triggers a full nimsuggest restart, since they are controlled by a nimsuggest command line option
     #   --exceptionInlayHints:on|off
     if not inlayExceptionHintsConfigurationEquals(oldConfiguration, newConfiguration):
-      ls.restartAllNimsuggestInstances
+      await ls.restartAllNimsuggestInstances()
     debug "Sending inlayHint refresh"
     #An empty object means no params at all
     ls.inlayHintsRefreshRequest = ls.call("workspace/inlayHint/refresh", JsonString"{}")
 
-proc maybeRequestConfigurationFromClient*(ls: LanguageServer) =
+proc maybeRequestConfigurationFromClient*(
+    ls: LanguageServer
+): Future[void] {.async: (raises: []).} =
   if ls.supportsConfigurationRequest:
     debug "Requesting configuration from the client"
-    let configurationParams = ConfigurationParams %* {"items": [{"section": "nim"}]}
+    try:
+      let configurationParams = ConfigurationParams %* {"items": [{"section": "nim"}]}
 
-    ls.prevWorkspaceConfiguration = ls.workspaceConfiguration
+      ls.prevWorkspaceConfiguration = ls.workspaceConfiguration
 
-    ls.workspaceConfiguration =
-      ls.call("workspace/configuration", JsonString LspConv.encode(configurationParams))
-    ls.workspaceConfiguration.addCallback do(futConfiguration: Future[JsonNode]) {.
-      gcsafe
-    .}:
-      if futConfiguration.error.isNil:
-        debug "Received the following configuration",
-          configuration = $futConfiguration.read()
-        if not isNil(ls.prevWorkspaceConfiguration) and
-            ls.prevWorkspaceConfiguration.finished:
-          let
-            oldConfiguration =
-              parseWorkspaceConfiguration(ls.prevWorkspaceConfiguration.read)
-            newConfiguration = parseWorkspaceConfiguration(futConfiguration.read)
-          handleConfigurationChanges(ls, oldConfiguration, newConfiguration)
+      let requested = ls.call(
+        "workspace/configuration", JsonString LspConv.encode(configurationParams)
+      )
+      ls.workspaceConfiguration = requested
+
+      let configuration = await requested
+      debug "Received the following configuration", configuration = $configuration
+      if not isNil(ls.prevWorkspaceConfiguration) and
+          ls.prevWorkspaceConfiguration.finished:
+        let
+          oldConfiguration =
+            parseWorkspaceConfiguration(ls.prevWorkspaceConfiguration.read)
+          newConfiguration = parseWorkspaceConfiguration(configuration)
+        await ls.handleConfigurationChanges(oldConfiguration, newConfiguration)
+    except CatchableError as ex:
+      error "Failed to handle the client configuration", error = ex.msg
   else:
     debug "Client does not support workspace/configuration"
     ls.workspaceConfiguration.complete(newJArray())

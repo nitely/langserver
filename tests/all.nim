@@ -6,4 +6,5 @@ import
   tmisc,
   ttestrunner,
   tmcp,
-  tstdio
+  tstdio,
+  tlifecycle
