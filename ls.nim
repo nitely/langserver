@@ -114,6 +114,7 @@ type
     mcp = "mcp"
 
   TransportMode* = enum
+    stdio = "stdio"
     socket = "socket"
 
   PendingRequestState* = enum
@@ -163,7 +164,7 @@ type
     entryPoints*: seq[string]
     testRunProcess*: Option[AsyncProcessRef]
       #There is only one test run process at a time
-    srv*: RpcSocketServer #Both modes use it to store the routes
+    srv*: RpcServer #Both modes use it to store the routes
     pendingRequests*: Table[uint, PendingRequest]
       #id to future. Each request is added here so we can cancel them later in the cancelRequest. Only requests, not notifications
     transportMode*: TransportMode
@@ -205,7 +206,7 @@ proc initLs*(params: CommandLineParams, storageDir: string): LanguageServer =
     workspaceConfiguration: Future[JsonNode](),
     filesWithDiags: initHashSet[string](),
     serverMode: params.mode.get(),
-    transportMode: params.transport.get(socket),
+    transportMode: params.transport.get(stdio),
     openFiles: initTable[string, NlsFileInfo](),
     # idleOpenFiles: initTable[string, NlsFileInfo](),
     storageDir: storageDir,

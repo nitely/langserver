@@ -1,4 +1,4 @@
-import json_rpc/servers/socketserver
+import json_rpc/server
 import chronicles, chronos
 import std/[syncio, os, json, strutils, strformat]
 import ls, utils, lstransports2, asyncprocmonitor
@@ -7,7 +7,7 @@ import protocol/types
 when defined(posix):
   import posix
 
-proc registerMcpRoutes(srv: RpcSocketServer, ls: LanguageServer) =
+proc registerMcpRoutes(srv: RpcServer, ls: LanguageServer) =
   # Routes
   srv.register(
     "initialize", wrapRpc(partial(mcp.initialize, (ls: ls, onExit: ls.onExit)))
@@ -19,7 +19,7 @@ proc registerMcpRoutes(srv: RpcSocketServer, ls: LanguageServer) =
   # Notifications
   srv.register("notifications/initialized", wrapRpc(partial(mcp.initialized, ls)))
 
-proc registerLspRoutes(srv: RpcSocketServer, ls: LanguageServer) =
+proc registerLspRoutes(srv: RpcServer, ls: LanguageServer) =
   srv.register(
     "initialize", wrapRpc(partial(lsp.initialize, (ls: ls, onExit: ls.onExit)))
   ) #use from ls
@@ -114,7 +114,8 @@ proc showHelp() =
   echo "  --version, -v            Show version information"
   echo "  --lsp                    Run in LSP server mode (default)"
   echo "  --mcp                    Run in MCP server mode"
-  echo "  --socket                 Use socket transport (the only one supported)"
+  echo "  --stdio                  Use stdio transport (default)"
+  echo "  --socket                 Use socket transport"
   echo "  --port=<port>            Port to use for socket transport"
   echo "  --clientProcessId=<pid>  Exit when the given process ID terminates"
   echo ""
@@ -162,8 +163,7 @@ proc handleParams(): CommandLineParams =
     if param == "--mcp":
       result.mode = some ServerMode.mcp
     if param == "--stdio":
-      stderr.writeLine("The stdio transport is not supported, use --socket")
-      quit 1
+      result.transport = some TransportMode.stdio
     if param == "--socket":
       result.transport = some TransportMode.socket
     if param.startsWith "--port":
@@ -176,13 +176,24 @@ proc handleParams(): CommandLineParams =
     if param in ["help", "--help", "-h"]:
       showHelp()
     inc i
-  if result.port == default(Port):
-    result.port = getNextFreePort()
-  echo &"port={result.port}"
   if result.mode.isNone:
     result.mode = some ServerMode.lsp
   if result.transport.isNone:
-    result.transport = some TransportMode.socket
+    result.transport = some TransportMode.stdio
+  if result.transport.get == socket:
+    #Nothing but the framed messages may go to stdout in stdio mode, so the
+    #port is only ever announced when the client is expected to dial in.
+    if result.port == default(Port):
+      result.port = getNextFreePort()
+    echo &"port={result.port}"
+
+proc registerRoutes*(ls: LanguageServer) =
+  ## The routes have to be registered before the server serves a connection.
+  case ls.serverMode
+  of lsp:
+    ls.srv.registerLspRoutes(ls)
+  of mcp:
+    ls.srv.registerMcpRoutes(ls)
 
 proc registerProcMonitor(ls: LanguageServer) =
   if ls.cmdLineClientProcessId.isSome:
@@ -214,15 +225,9 @@ proc main*(cmdLineParams: CommandLineParams): LanguageServer =
   debug "Starting nimlangserver", version = LSPVersion, params = cmdLineParams
   result = initLs(cmdLineParams, ensureStorageDir())
   #The routes have to be in place before the server accepts a connection
-  result.initSocketServer()
-
-  case result.serverMode
-  of lsp:
-    result.srv.registerLspRoutes(result)
-  of mcp:
-    result.srv.registerMcpRoutes(result)
-
-  result.startSocketServer(cmdLineParams.port)
+  result.initServer()
+  result.registerRoutes()
+  result.startServer(cmdLineParams.port)
   result.registerProcMonitor()
 
 when isMainModule:

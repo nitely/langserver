@@ -21,9 +21,9 @@ The generated [API index](apidocs/theindex.html) is also a useful reference when
 ```text
 Client
 ├─ LSP client (editor)
-│  └─ JSON-RPC over a socket, with Content-Length framing
+│  └─ JSON-RPC over stdio or a socket, with Content-Length framing
 └─ MCP client
-   └─ JSON-RPC over a socket, with Content-Length framing
+   └─ JSON-RPC over stdio (one JSON object per line) or a socket
 
 nimlangserver.nim
 └─ builds LanguageServer state, starts transport, registers routes
@@ -31,7 +31,7 @@ nimlangserver.nim
    └─ registerMcpRoutes()  -> routes/mcp.nim
 
 lstransports2.nim
-└─ thin layer over json-rpc's socket server
+└─ thin layer over json-rpc's stdio and socket servers
    ├─ wrapRpc()          -> route handler <-> RpcProc
    ├─ addRpcToCancellable() -> pending request bookkeeping
    └─ initActions()      -> ls.notify / ls.call / ls.onExit
@@ -56,7 +56,7 @@ Backends
 
 ### LSP flow
 
-1. `nimlangserver.nim` parses CLI flags, creates `LanguageServer`, registers LSP routes, and starts the socket transport.
+1. `nimlangserver.nim` parses CLI flags, creates `LanguageServer`, registers LSP routes, and starts the stdio or socket transport.
 2. `routes/lsp.nim.initialize` stores client capabilities and eagerly starts `nimsuggest` for nimble entry points.
 3. `json-rpc` reads and decodes the JSON-RPC messages and its router looks up the registered route and invokes the handler.
 4. Route handlers use `ls.nim` helpers such as `didOpenFile`, `getProjectFile`, and `tryGetNimsuggest`.
@@ -75,7 +75,7 @@ The MCP flow is the same shared pipeline with a thinner route layer:
 ### Important design notes
 
 - `LanguageServer` is a shared state object for both modes. The `serverMode` field switches the shape of the initialize params/capabilities stored inside it.
-- `lstransports2.nim` is shared by both modes; both speak JSON-RPC over a socket with `Content-Length` framing.
+- `lstransports2.nim` is shared by both modes and by both transports; the transports differ only in where the connection comes from — stdio serves the pipes the spawning client left on our descriptors, the socket server serves every accepted client. The framing is `Content-Length` everywhere except MCP over stdio, which is newline delimited JSON, as MCP clients expect.
 - Messages are dispatched concurrently, with one ordering guarantee: the part of a handler that runs before its first `await` completes before the next message is read off the connection. `lstransports2.route` returns immediately instead of awaiting the handler, and chronos runs async bodies eagerly, so that prefix is the only place where ordering against later messages is guaranteed. Anything a following message could observe — the `openFiles` entry, the stash file contents — has to be applied there. That is what `ls.registerOpenFile` is for; `didChange`, `didClose` and `didChangeConfiguration` happen to be fully synchronous already.
 - MCP currently treats the current working directory as the workspace root (`getRootPath(McpInitializeParams)` returns `getCurrentDir()`), so start the server from the workspace you want to inspect.
 - `tickLs` in `nimlangserver.nim` keeps running after initialization and calls `ls.tick()` to prune completed requests and stop idle `nimsuggest` processes.

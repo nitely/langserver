@@ -1,19 +1,27 @@
-## Socket (TCP) JSON-RPC transport for the language server.
+## JSON-RPC transports for the language server: stdio and socket (TCP).
 ##
 ## Framing, routing, request/response correlation and error responses all come
-## from `json_rpc`: an accepted connection becomes a bidirectional
-## `RpcSocketClient` speaking the LSP `Content-Length` framing, and incoming
-## requests are dispatched through `ls.srv.router`. What is left here is the
-## glue the language server needs on top of that:
+## from `json_rpc`: the served connection becomes a bidirectional
+## `RpcConnection` speaking the LSP `Content-Length` framing (see
+## `stdioFraming` for the one exception), and incoming requests are dispatched
+## through `ls.srv.router`. What is left here is the glue the language server
+## needs on top of that:
 ##
 ## * `wrapRpc` adapts the handlers in `routes/` to `RpcProc`, since they take
 ##   the whole params object rather than one argument per member.
 ## * `route` dispatches each request off the read loop and records it, which
 ##   is what makes `$/cancelRequest` work.
 ## * `initActions` implements `ls.notify` / `ls.call` / `ls.onExit`.
+##
+## The two transports differ only in where the connection comes from: stdio
+## serves the pipes the spawning client left on our own descriptors, the socket
+## server serves every client that connects. `processStdioClient` and
+## `processSocketClient` are the whole of that difference; the rest is shared.
 
 import json_rpc/[servers/socketserver, clients/socketclient]
+import json_rpc/[servers/stdioserver, clients/stdioclient]
 import chronicles, chronos
+import stew/byteutils
 import std/times
 import ls, utils
 import protocol/[enums, types]
@@ -105,7 +113,7 @@ proc trackRequest(
       error "Cannot complete the pending request, id not found", id = reqId
 
 proc respond(
-    ls: LanguageServer, conn: RpcSocketClient, handled: Future[seq[byte]].Raising([])
+    ls: LanguageServer, conn: RpcConnection, handled: Future[seq[byte]].Raising([])
 ) {.async: (raises: []).} =
   let res =
     try:
@@ -124,7 +132,7 @@ proc respond(
     error "Cannot send response", err = ex.msg
 
 proc route(
-    ls: LanguageServer, conn: RpcSocketClient, request: RequestBatchRx
+    ls: LanguageServer, conn: RpcConnection, request: RequestBatchRx
 ): Future[seq[byte]] {.async: (raises: [], raw: true).} =
   ## json-rpc awaits whatever this returns before it reads the next message off
   ## the connection, so hand back an empty response straight away and let the
@@ -148,7 +156,18 @@ proc route(
   )
   result.complete(default(seq[byte]))
 
-proc processClient(
+proc register(ls: LanguageServer, conn: RpcConnection) =
+  ## Makes the connection *the* client: `ls.notify` and `ls.call` talk to
+  ## whatever is registered here.
+  ls.srv.connections.incl(conn)
+  ls.connection = conn
+
+proc unregister(ls: LanguageServer, conn: RpcConnection) =
+  ls.srv.connections.excl(conn)
+  if ls.connection == conn:
+    ls.connection = nil
+
+proc processSocketClient(
     ls: LanguageServer, server: StreamServer, transport: StreamTransport
 ) {.async: (raises: []), gcsafe.} =
   let remote = transport.remoteAddress2().valueOr(default(TransportAddress))
@@ -162,20 +181,65 @@ proc processClient(
   )
 
   debug "Client connected", address = remote
-  ls.srv.connections.incl(conn)
-  ls.connection = conn
+  ls.register(conn)
 
   await conn.attach(transport, $remote)
 
   debug "Client disconnected", address = remote
-  ls.srv.connections.excl(conn)
-  if ls.connection == conn:
-    ls.connection = nil
+  ls.unregister(conn)
+
+proc recvJsonLine(
+    transport: StreamTransport, limit: int
+): Future[seq[byte]] {.async: (raises: [CancelledError, TransportError]).} =
+  toBytes(await transport.readLine(limit, sep = "\n"))
+
+proc sendJsonLine(
+    transport: StreamTransport, msg: seq[byte]
+) {.async: (raises: [CancelledError, TransportError]).} =
+  discard await transport.write(msg & toBytes("\n"))
+
+proc stdioFraming(ls: LanguageServer): Framing =
+  ## LSP frames every message with a `Content-Length` header. MCP over stdio
+  ## does not: it is one JSON object per line, which is what an agent spawning
+  ## `--mcp --stdio` speaks. (Over a socket both modes use the LSP framing;
+  ## MCP does not specify one there.)
+  case ls.serverMode
+  of lsp:
+    Framing.httpHeader()
+  of mcp:
+    Framing.init(recvJsonLine, sendJsonLine)
+
+proc processStdioClient(
+    ls: LanguageServer, server: RpcStdioServer, input, output: StreamTransport
+) {.async: (raises: []), gcsafe.} =
+  ## The stdio counterpart of `processSocketClient`. There is nothing to accept:
+  ## the client is the process that spawned us, and the connection is the pair
+  ## of pipes it left on our standard descriptors.
+  var conn: RpcStdioClient #Captured by the router, assigned right below
+  conn = RpcStdioClient.new(
+    framing = ls.stdioFraming(),
+    router = proc(
+        request: RequestBatchRx
+    ): Future[seq[byte]] {.async: (raises: [], raw: true).} =
+      ls.route(conn, request),
+  )
+
+  debug "Serving the client on stdio"
+  ls.register(conn)
+
+  await conn.attach(input, output, "stdio")
+
+  debug "Client disconnected"
+  ls.unregister(conn)
 
 proc initActions*(ls: LanguageServer) =
   let onExit: OnExitCallback = proc() {.async.} =
-    ls.srv.stop()
-    ls.srv.close()
+    case ls.transportMode
+    of stdio:
+      await RpcStdioServer(ls.srv).stop()
+    of socket:
+      RpcSocketServer(ls.srv).stop()
+      RpcSocketServer(ls.srv).close()
 
   let notifyAction: NotifyAction = proc(name: string, params: JsonString) =
     #Not `ls.srv.notify`, that one goes out to every connected client
@@ -221,15 +285,34 @@ proc initActions*(ls: LanguageServer) =
   ls.notify = notifyAction
   ls.onExit = onExit
 
-proc initSocketServer*(ls: LanguageServer) =
+proc initServer*(ls: LanguageServer) =
   ## Creates the rpc server so that the routes can be registered on it, and
-  ## hooks up `ls.notify` / `ls.call` / `ls.onExit`. Nothing is listening yet.
-  ls.srv = newRpcSocketServer(partial(processClient, ls))
+  ## hooks up `ls.notify` / `ls.call` / `ls.onExit`. Nothing is served yet.
+  ls.srv =
+    case ls.transportMode
+    of stdio:
+      newRpcStdioServer(partial(processStdioClient, ls))
+    of socket:
+      newRpcSocketServer(partial(processSocketClient, ls))
   ls.initActions()
 
+proc startStdioServer*(ls: LanguageServer, input, output: StreamTransport) =
+  ## Serves the connection on the given pair of pipes. Tests use it to serve a
+  ## connection of their own making rather than the process' descriptors.
+  RpcStdioServer(ls.srv).start(input, output)
+  debug "Stdio server started"
+
+proc startStdioServer*(ls: LanguageServer) =
+  ## Serves the client that spawned us over its own pipes. Unlike a socket
+  ## there is nothing to wait for: the connection exists from the start, so
+  ## `ls.notify` and `ls.call` can be used as soon as this returns.
+  RpcStdioServer(ls.srv).start()
+  debug "Stdio server started"
+
 proc startSocketServer*(ls: LanguageServer, port: Port) =
-  ls.srv.addStreamServer("localhost", port)
-  ls.srv.start()
+  let srv = RpcSocketServer(ls.srv)
+  srv.addStreamServer("localhost", port)
+  srv.start()
 
   proc waitUntilConnected(ls: LanguageServer) {.async.} =
     while ls.connection.isNil:
@@ -240,3 +323,10 @@ proc startSocketServer*(ls: LanguageServer, port: Port) =
     debug "Waiting for socket server to be ready"
     waitFor waitUntilConnected(ls)
     debug "Socket server started"
+
+proc startServer*(ls: LanguageServer, port: Port) =
+  case ls.transportMode
+  of stdio:
+    ls.startStdioServer()
+  of socket:
+    ls.startSocketServer(port)

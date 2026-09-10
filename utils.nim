@@ -284,6 +284,12 @@ proc partial*[A, B, C, D](
   return proc(b: B, c: C): D {.gcsafe, raises: [].} =
     return fn(a, b, c)
 
+proc partial*[A, B, C, D, E](
+    fn: proc(a: A, b: B, c: C, d: D): E {.gcsafe, raises: [], nimcall.}, a: A
+): proc(b: B, c: C, d: D): E {.gcsafe, raises: [].} =
+  return proc(b: B, c: C, d: D): E {.gcsafe, raises: [].} =
+    return fn(a, b, c, d)
+
 proc ensureStorageDir*(): string =
   result = getTempDir() / "nimlangserver"
   discard existsOrCreateDir(result)
