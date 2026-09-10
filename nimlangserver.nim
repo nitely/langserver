@@ -240,7 +240,9 @@ when isMainModule:
         debug "Terminated via signal", sig
         ls.stopNimsuggestProcessesP()
         exitnow(1)
-    runForever()
+
+    waitFor ls.serve()
+    waitFor ls.stopNimsuggestProcesses()
   except Exception as e:
     error "Error in main"
     writeStackTrace e

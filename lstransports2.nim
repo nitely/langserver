@@ -150,6 +150,14 @@ proc unregister(ls: LanguageServer, conn: RpcConnection) =
   if ls.connection == conn:
     ls.connection = nil
 
+proc endServing(ls: LanguageServer, failure: ref JsonRpcError = nil) =
+  if ls.served.isNil or ls.served.finished:
+    return
+  if failure.isNil:
+    ls.served.complete()
+  else:
+    ls.served.fail(failure)
+
 proc processSocketClient(
     ls: LanguageServer, server: StreamServer, transport: StreamTransport
 ) {.async: (raises: []), gcsafe.} =
@@ -176,6 +184,7 @@ proc processSocketClient(
 
   debug "Client disconnected", address = remote
   ls.unregister(conn)
+  ls.endServing(conn.lastError)
 
 proc recvJsonLine(
     transport: StreamTransport, limit: int
@@ -220,9 +229,11 @@ proc processStdioClient(
 
   debug "Client disconnected"
   ls.unregister(conn)
+  ls.endServing(conn.lastError)
 
 proc initActions*(ls: LanguageServer) =
   let onExit: OnExitCallback = proc() {.async.} =
+    ls.endServing()
     case ls.transportMode
     of stdio:
       await RpcStdioServer(ls.srv).stop()
@@ -274,9 +285,13 @@ proc initActions*(ls: LanguageServer) =
   ls.notify = notifyAction
   ls.onExit = onExit
 
+proc serve*(ls: LanguageServer): Future[void] =
+  ls.served
+
 proc initServer*(ls: LanguageServer) =
   ## Creates the rpc server so that the routes can be registered on it, and
   ## hooks up `ls.notify` / `ls.call` / `ls.onExit`. Nothing is served yet.
+  ls.served = newFuture[void]("ls.serve")
   ls.srv =
     case ls.transportMode
     of stdio:

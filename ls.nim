@@ -169,6 +169,7 @@ type
       #id to future. Each request is added here so we can cancel them later in the cancelRequest. Only requests, not notifications
     transportMode*: TransportMode
     connection*: RpcConnection #The connected client, if any
+    served*: Future[void]
     projectErrors*: seq[ProjectError]
     lastStatusSent: JsonString
     failTable*: Table[string, int]
