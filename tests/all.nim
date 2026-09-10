@@ -6,4 +6,5 @@ import
   textensions,
   tmisc,
   ttestrunner,
-  tmcp
+  tmcp,
+  tasyncsafety
