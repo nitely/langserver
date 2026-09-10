@@ -35,4 +35,6 @@ nimlangserver --mcp --socket --port=6001
 
 **stdio** is the right choice when the client launches `nimlangserver` as a subprocess (the normal case for both editors and AI agents). LSP frames its messages with a `Content-Length` header; MCP is newline delimited JSON, one message per line. Nothing else is ever written to stdout, so the stream stays parseable — logs go to stderr.
 
-**socket** is useful when the server and client run in separate environments — for example, a native Windows editor connecting to a server running inside WSL, or when you want a single running server to be reachable from multiple clients. The chosen port is printed on stdout as `port=<port>` before the server starts listening.
+**socket** is useful when the server and client run in separate environments — for example, a native Windows editor connecting to a server running inside WSL. The chosen port is printed on stdout as `port=<port>` before the server starts listening.
+
+The server serves **one client at a time**, on either transport.

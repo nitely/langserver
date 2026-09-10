@@ -62,10 +62,6 @@ proc wrapRpc*[T](fn: proc(params: T): Future[auto] {.gcsafe, raises: [].}): Rpc 
         let res = await fn(val)
         return JsonString(LspConv.encode(res))
     except CancelledError:
-      #`$/cancelRequest`. Answered with the code LSP reserves for it, otherwise
-      #json-rpc reports the cancellation as an internal server error. The code
-      #is inside the range json-rpc asks applications to stay out of, but it is
-      #the one the LSP spec assigns and clients match on it.
       raise (ref ApplicationError)(
         code: ord(RequestCancelled), msg: "Request cancelled"
       )
@@ -134,19 +130,6 @@ proc respond(
 proc route(
     ls: LanguageServer, conn: RpcConnection, request: RequestBatchRx
 ): Future[seq[byte]] {.async: (raises: [], raw: true).} =
-  ## json-rpc awaits whatever this returns before it reads the next message off
-  ## the connection, so hand back an empty response straight away and let the
-  ## request run on its own. Handling it here instead would stall the whole
-  ## connection for the duration, and `$/cancelRequest` could never be read
-  ## while the request it cancels is still running.
-  ##
-  ## Messages are therefore handled concurrently, with one ordering guarantee:
-  ## chronos runs an async body up to its first `await`, and the way down to the
-  ## handler does not suspend, so whatever a handler does before it yields is
-  ## done before the next message is read. Handlers have to hold up their end of
-  ## that: anything a following message could look at has to be applied in that
-  ## prefix. `ls.registerOpenFile` is the part of opening a file that exists for
-  ## this reason.
   let handled = ls.srv.router.route(request)
   ls.trackRequest(request, handled)
   asyncSpawn ls.respond(conn, handled)
@@ -171,6 +154,12 @@ proc processSocketClient(
     ls: LanguageServer, server: StreamServer, transport: StreamTransport
 ) {.async: (raises: []), gcsafe.} =
   let remote = transport.remoteAddress2().valueOr(default(TransportAddress))
+
+  if not ls.connection.isNil:
+    warn "Refusing a second client, one is already connected", address = remote
+    await transport.closeWait()
+    return
+
   var conn: RpcSocketClient #Captured by the router, assigned right below
   conn = RpcSocketClient.new(
     framing = Framing.httpHeader(),

@@ -271,3 +271,35 @@ suite "Nimlangserver idle nimsuggest cleanup":
         removed = true
         break
     check removed
+
+suite "Nimlangserver single client":
+  #`ls` is a single session - one set of open files, one set of client
+  #capabilities, one workspace configuration - so the socket server serves one
+  #client at a time and hangs up on anyone else. Without this, a second client
+  #would silently take over `ls.connection` and the first one would stop
+  #receiving notifications while still having its requests answered.
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification("extension/statusUpdate")
+
+  proc waitUntilConnected(ls: LanguageServer) {.async.} =
+    while ls.connection.isNil:
+      await sleepAsync(10.milliseconds)
+
+  waitFor ls.waitUntilConnected().wait(10.seconds)
+
+  test "A second client is hung up on":
+    let second = waitFor connect(resolveTAddress("localhost", cmdParams.port)[0])
+    #Closed without a byte being sent, and the first client keeps the seat
+    let data = waitFor second.read().wait(10.seconds)
+    check data.len == 0
+    check second.atEof()
+    check ls.connection != nil
+    waitFor second.closeWait()
+
+  test "The first client is still served":
+    let res = waitFor client.call("shutdown", newJObject()).wait(10.seconds)
+    check res.kind == JNull
