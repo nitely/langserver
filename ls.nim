@@ -167,6 +167,7 @@ type
     srv*: RpcServer #Both modes use it to store the routes
     pendingRequests*: Table[uint, PendingRequest]
       #id to future. Each request is added here so we can cancel them later in the cancelRequest. Only requests, not notifications
+    nimsuggestCreations*: Table[string, Future[void].Raising([])]
     transportMode*: TransportMode
     connection*: RpcConnection #The connected client, if any
     served*: Future[void]
@@ -782,7 +783,7 @@ proc warnIfUnknown*(
 
 proc createOrRestartNimsuggest*(
   ls: LanguageServer, projectFile: string, uri = ""
-) {.gcsafe, raises: [].}
+): Future[void] {.async: (raises: []), gcsafe.}
 
 proc initNimsuggestInstances*(ls: LanguageServer, rootPath: string) {.async.} =
   if rootPath == "":
@@ -796,7 +797,7 @@ proc initNimsuggestInstances*(ls: LanguageServer, rootPath: string) {.async.} =
     for entryPoint in ls.entryPoints:
       debug "Starting nimsuggest for entry point ", entry = entryPoint
       if entryPoint notin ls.projectFiles:
-        ls.createOrRestartNimsuggest(entryPoint)
+        await ls.createOrRestartNimsuggest(entryPoint)
 
 proc getNimsuggestInner(ls: LanguageServer, uri: string): Future[Nimsuggest] {.async.} =
   assert uri in ls.openFiles, "File not open"
@@ -804,7 +805,7 @@ proc getNimsuggestInner(ls: LanguageServer, uri: string): Future[Nimsuggest] {.a
   let projectFile = await ls.openFiles[uri].projectFile
   if not ls.projectFiles.hasKey(projectFile):
     debug "Creating new nimsuggest instance", uri = uri, projectFile = projectFile
-    ls.createOrRestartNimsuggest(projectFile, uri)
+    await ls.createOrRestartNimsuggest(projectFile, uri)
     # Wait a bit to allow nimsuggest to start
     await sleepAsync(10)
 
@@ -901,7 +902,7 @@ proc setupOpenFile*(
       uri = uri, projectFile = projectFile
     if not ls.projectFiles.hasKey(projectFile):
       debug "Will create nimsuggest for this file", uri = uri
-      ls.createOrRestartNimsuggest(projectFile, uri)
+      await ls.createOrRestartNimsuggest(projectFile, uri)
 
     let ns = await ls.tryGetNimSuggest(uri)
     if ns.isSome:
@@ -1044,19 +1045,21 @@ proc checkProject*(ls: LanguageServer, uri: string): Future[void] {.async.} =
       debug "Running delayed check project...", uri = uri
       traceAsyncErrors ls.checkProject(uri)
 
-proc onErrorCallback(args: (LanguageServer, string), project: Project) =
+proc onErrorCallbackAsync(
+    args: (LanguageServer, string), project: Project
+): Future[void] {.async: (raises: []).} =
   let
     ls = args[0]
     uri = args[1]
   debug "NimSuggest needed to be restarted due to an error "
   ls.failTable[project.file] = ls.failTable.getOrDefault(project.file, 0) + 1
   debug "Fail count", count = ls.failTable[project.file]
-  let configuration = ls.getWorkspaceConfiguration().waitFor()
+  let configuration = await ls.getWorkspaceConfiguration()
   warn "Server stopped.", projectFile = project.file
   try:
     if configuration.autoRestart.get(true) and project.ns.completed and
         project.ns.read.successfullCall:
-      ls.createOrRestartNimsuggest(project.file, uri)
+      await ls.createOrRestartNimsuggest(project.file, uri)
     else:
       ls.showMessage(
         fmt "Server failed with {project.errorMessage}.", MessageType.Error
@@ -1073,16 +1076,19 @@ proc onErrorCallback(args: (LanguageServer, string), project: Project) =
       )
       ls.sendStatusChanged()
 
-proc createOrRestartNimsuggest*(
+proc onErrorCallback(args: (LanguageServer, string), project: Project) =
+  asyncSpawn onErrorCallbackAsync(args, project)
+
+proc createOrRestartNimsuggestImpl(
     ls: LanguageServer, projectFile: string, uri = ""
-) {.gcsafe, raises: [].} =
+): Future[void] {.async: (raises: []), gcsafe.} =
   try:
     debug "Starting createOrRestartNimsuggest", projectFile = projectFile, uri = uri
     let
-      configuration = ls.getWorkspaceConfiguration().waitFor()
-      workingDir = ls.getWorkingDir(projectFile).waitFor()
+      configuration = await ls.getWorkspaceConfiguration()
+      workingDir = await ls.getWorkingDir(projectFile)
       (nimsuggestPath, version) =
-        ls.getNimSuggestPathAndVersion(configuration, workingDir).waitFor()
+        await ls.getNimSuggestPathAndVersion(configuration, workingDir)
       timeout = configuration.timeout.get(REQUEST_TIMEOUT)
       restartCallback = proc(ns: Nimsuggest) {.gcsafe, raises: [].} =
         warn "Restarting the server due to requests being to slow",
@@ -1091,13 +1097,13 @@ proc createOrRestartNimsuggest*(
           fmt "Restarting nimsuggest for file {projectFile} due to timeout.",
           MessageType.Warning,
         )
-        ls.createOrRestartNimsuggest(projectFile, uri)
+        asyncSpawn ls.createOrRestartNimsuggest(projectFile, uri)
         ls.sendStatusChanged()
       errorCallback = partial(onErrorCallback, (ls, uri))
 
     debug "Creating new nimsuggest project", projectFile = projectFile
 
-    let projectNext = waitFor createNimsuggest(
+    let projectNext = await createNimsuggest(
       projectFile,
       nimsuggestPath,
       version,
@@ -1135,10 +1141,24 @@ proc createOrRestartNimsuggest*(
     error "Failed to create/restart nimsuggest",
       projectFile = projectFile, error = ex.msg
 
+proc createOrRestartNimsuggest*(
+    ls: LanguageServer, projectFile: string, uri = ""
+): Future[void] {.async: (raises: []), gcsafe.} =
+  let inFlight = ls.nimsuggestCreations.getOrDefault(projectFile)
+  if not inFlight.isNil and not inFlight.finished:
+    await inFlight
+    return
+
+  let creation = ls.createOrRestartNimsuggestImpl(projectFile, uri)
+  ls.nimsuggestCreations[projectFile] = creation
+  await creation
+  if ls.nimsuggestCreations.getOrDefault(projectFile) == creation:
+    ls.nimsuggestCreations.del(projectFile)
+
 proc restartAllNimsuggestInstances(ls: LanguageServer) =
   debug "Restarting all nimsuggest instances"
   for projectFile in ls.projectFiles.keys:
-    ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+    asyncSpawn ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
 
 proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
   if ls.requiresDynamicRegistrationForDidChangeConfiguration:

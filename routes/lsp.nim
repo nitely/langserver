@@ -265,7 +265,7 @@ proc extensionSuggest*(
     ls.showMessage(fmt "Restarting nimsuggest {projectFile}", MessageType.Info)
     project.errorCallback = none(ProjectCallback)
     project.stop()
-    ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
     ls.sendStatusChanged()
 
   case params.action
@@ -613,7 +613,7 @@ proc executeCommand*(
   case params.command
   of RESTART_COMMAND:
     debug "Restarting nimsuggest", projectFile = projectFile
-    ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
   of CHECK_PROJECT_COMMAND:
     debug "Checking project", projectFile = projectFile
     ls.checkProject(projectFile.pathToUri).traceAsyncErrors
