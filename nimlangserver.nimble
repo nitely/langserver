@@ -17,6 +17,7 @@ requires "nim >= 2.2.10",
   "."
 
 task test, "run tests":
+  delEnv("NIMBLE_DIR")
   --run
   --silent
   setCommand("c", "tests/all.nim")
