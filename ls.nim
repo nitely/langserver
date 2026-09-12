@@ -171,7 +171,6 @@ type
     storageDir*: string
     cmdLineClientProcessId*: Option[int]
     nimDumpCache*: Table[string, NimbleDumpInfo] #path to NimbleDumpInfo
-    nimDumpInFlight*: Table[string, Future[NimbleDumpInfo]]
     entryPoints*: seq[string]
     responseMap*: TableRef[string, Future[JsonNode]]
     testRunProcess*: Option[AsyncProcessRef]
@@ -272,16 +271,12 @@ proc supportSignatureHelp*(cc: LspClientCapabilities): bool =
   let caps = cc.textDocument
   caps.isSome and caps.get.signatureHelp.isSome
 
-proc getNimbleDumpInfoImpl(
+proc getNimbleDumpInfo*(
     ls: LanguageServer, nimbleFile: string, workingDir = ""
 ): Future[NimbleDumpInfo] {.async.} =
+  if nimbleFile in ls.nimDumpCache:
+    return ls.nimDumpCache.getOrDefault(nimbleFile)
   var process: AsyncProcessRef
-  let dumpCwd = nimbleFile.parentDir()
-  debug "nimble dump starting",
-    nimbleFile = nimbleFile,
-    cwd = dumpCwd,
-    workingDir = workingDir,
-    nimbleDir = getEnv("NIMBLE_DIR")
   try:
     process = await startProcess(
       "nimble",
@@ -312,37 +307,11 @@ proc getNimbleDumpInfoImpl(
       nimbleFile = result.nimblePath.get
     if nimbleFile != "":
       ls.nimDumpCache[nimbleFile] = result
-
-    debug "nimble dump finished",
-      nimbleFile = nimbleFile,
-      cwd = dumpCwd,
-      nimDir = result.nimDir.get(""),
-      name = result.name,
-      outputLen = info.len
   except OSError, IOError, AsyncProcessError:
-    debug "Failed to get nimble dump info",
-      nimbleFile = nimbleFile, cwd = dumpCwd, err = getCurrentExceptionMsg()
+    debug "Failed to get nimble dump info", nimbleFile = nimbleFile
   finally:
     if process != nil:
       await shutdownChildProcess(process)
-
-proc getNimbleDumpInfo*(
-    ls: LanguageServer, nimbleFile: string, workingDir = ""
-): Future[NimbleDumpInfo] {.async.} =
-  if nimbleFile in ls.nimDumpCache:
-    return ls.nimDumpCache.getOrDefault(nimbleFile)
-
-  let inFlight = ls.nimDumpInFlight.getOrDefault(nimbleFile)
-  if not inFlight.isNil and not inFlight.finished:
-    return await inFlight
-
-  let dump = ls.getNimbleDumpInfoImpl(nimbleFile, workingDir)
-  ls.nimDumpInFlight[nimbleFile] = dump
-  try:
-    await dump
-  finally:
-    if ls.nimDumpInFlight.getOrDefault(nimbleFile) == dump:
-      ls.nimDumpInFlight.del(nimbleFile)
 
 proc parseWorkspaceConfiguration*(conf: JsonNode): NlsConfig =
   try:
