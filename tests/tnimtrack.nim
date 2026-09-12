@@ -10,8 +10,12 @@ suite "Nim track with nim >= 2.4":
   let trackProjectDir = absolutePath("tests" / "projects" / "trackproject")
   let savedDir = getCurrentDir()
   setCurrentDir(trackProjectDir)
-  discard execCmdEx("nimble setup -ly")
+  let (setupOutput, setupExitCode) = execCmdEx("nimble setup -ly")
   setCurrentDir(savedDir)
+
+  test "nimble setup for the track project succeeds":
+    checkpoint setupOutput
+    check setupExitCode == 0
 
   let cmdParams =
     CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())

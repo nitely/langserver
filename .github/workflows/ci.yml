@@ -39,9 +39,19 @@ jobs:
         shell: bash
         run: nimble -yld install
 
+      - name: Bootstrap nim track toolchain
+        shell: bash
+        working-directory: tests/projects/trackproject
+        run: nimble setup -ly
+
       - name: Nimble Test
         shell: bash
         run: nimble test
+
+      - name: Package dir state on failure
+        if: failure()
+        shell: bash
+        run: ls -la ~/.nimble/pkgs2 ~/.nimble/nimbinaries nimbledeps/pkgs2 || true
 
   lint:
     name: Lint
