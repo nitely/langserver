@@ -277,6 +277,12 @@ proc getNimbleDumpInfo*(
   if nimbleFile in ls.nimDumpCache:
     return ls.nimDumpCache.getOrDefault(nimbleFile)
   var process: AsyncProcessRef
+  let dumpCwd = nimbleFile.parentDir()
+  debug "nimble dump starting",
+    nimbleFile = nimbleFile,
+    cwd = dumpCwd,
+    workingDir = workingDir,
+    nimbleDir = getEnv("NIMBLE_DIR")
   try:
     process = await startProcess(
       "nimble",
@@ -307,8 +313,16 @@ proc getNimbleDumpInfo*(
       nimbleFile = result.nimblePath.get
     if nimbleFile != "":
       ls.nimDumpCache[nimbleFile] = result
+
+    debug "nimble dump finished",
+      nimbleFile = nimbleFile,
+      cwd = dumpCwd,
+      nimDir = result.nimDir.get(""),
+      name = result.name,
+      outputLen = info.len
   except OSError, IOError, AsyncProcessError:
-    debug "Failed to get nimble dump info", nimbleFile = nimbleFile
+    debug "Failed to get nimble dump info",
+      nimbleFile = nimbleFile, cwd = dumpCwd, err = getCurrentExceptionMsg()
   finally:
     if process != nil:
       await shutdownChildProcess(process)
