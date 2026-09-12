@@ -11,7 +11,7 @@ concurrency: # Cancel stale PR builds (but not push builds)
 jobs:
   test:
     strategy:
-      # fail-fast: false
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
