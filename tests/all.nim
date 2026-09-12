@@ -13,6 +13,6 @@ import
   ttestrunner,
   tmcp
 
-# XXX task* messes the env vars
+# https://github.com/nim-lang/langserver/pull/451
 import
   textensions
