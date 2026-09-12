@@ -3,7 +3,7 @@ import
   tnimlangserver,
   tnimtrack,
   tprojectsetup,
-  textensions,
   tmisc,
   ttestrunner,
-  tmcp
+  tmcp,
+  textensions

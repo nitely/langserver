@@ -37,12 +37,12 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: nimble -yld install
+        run: nimble -yl install -d
 
       - name: Bootstrap nim track toolchain
         shell: bash
         working-directory: tests/projects/trackproject
-        run: nimble setup -ly
+        run: nimble -yl setup
 
       - name: Nimble Test
         shell: bash
