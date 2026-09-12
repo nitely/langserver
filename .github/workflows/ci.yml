@@ -4,6 +4,10 @@ on:
   schedule:
   - cron: "0 19 * * *"
 
+concurrency: # Cancel stale PR builds (but not push builds)
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
