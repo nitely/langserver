@@ -19,6 +19,7 @@ jobs:
           # https://github.com/nim-lang/setup-nimble-action/issues/13
           # - macos-latest
           - windows-latest
+        attempt: [1, 2, 3, 4, 5]
     name: CI / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     env:
