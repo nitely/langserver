@@ -216,6 +216,15 @@ proc initLs*(params: CommandLineParams, storageDir: string): LanguageServer =
     extensionCapabilities: LspExtensionCapability.items.toSet,
   )
 
+proc waitProjectFile*(file: NlsFileInfo): Future[string] {.async.} =
+  ## Waits for the open file's `projectFile` without awaiting it directly. That
+  ## future is shared by everything touching the file, and cancelling whoever
+  ## awaits it (e.g. `$/cancelRequest` on a request still waiting for the
+  ## startup) would cancel it too, leaving the file unusable for every later
+  ## request.
+  await file.projectFile.join()
+  return file.projectFile.read()
+
 proc getNimbleEntryPoints*(
     dumpInfo: NimbleDumpInfo, nimbleProjectPath: string
 ): seq[string] =
@@ -424,7 +433,7 @@ proc addProjectFileToPendingRequest*(
       var projectFile = uri.uriToPath()
       if projectFile notin ls.projectFiles:
         if uri in ls.openFiles:
-          projectFile = await ls.openFiles[uri].projectFile
+          projectFile = await ls.openFiles[uri].waitProjectFile()
 
       ls.pendingRequests[id].projectFile = some projectFile
       ls.sendStatusChanged
@@ -802,7 +811,7 @@ proc initNimsuggestInstances*(ls: LanguageServer, rootPath: string) {.async.} =
 proc getNimsuggestInner(ls: LanguageServer, uri: string): Future[Nimsuggest] {.async.} =
   assert uri in ls.openFiles, "File not open"
 
-  let projectFile = await ls.openFiles[uri].projectFile
+  let projectFile = await ls.openFiles[uri].waitProjectFile()
   if not ls.projectFiles.hasKey(projectFile):
     debug "Creating new nimsuggest instance", uri = uri, projectFile = projectFile
     await ls.createOrRestartNimsuggest(projectFile, uri)
@@ -864,6 +873,18 @@ proc makeIdleFile*(ls: LanguageServer, file: NlsFileInfo): Future[void] {.async.
 
 proc getProjectFile*(fileUri: string, ls: LanguageServer): Future[string] {.async.}
 
+proc getProjectFileAfterStartup(
+    ls: LanguageServer, fileUri: string
+): Future[string] {.async.} =
+  ## Resolving the project depends on the startup: with the default
+  ## `maxNimsuggestProcesses: 1` it reuses the nimsuggest `nimsuggestInit`
+  ## starts, and before that nimsuggest is registered it would fall back to the
+  ## file itself and start another one. So only the resolution waits for the
+  ## startup, not the registration of the file.
+  if not ls.nimsuggestInit.isNil:
+    await ls.nimsuggestInit
+  return await getProjectFile(fileUri, ls)
+
 proc registerOpenFile*(ls: LanguageServer, textDocument: TextDocumentItem) =
   ## Everything about opening a file that another request can observe: the
   ## `openFiles` entry and the stash file holding the contents. Deliberately
@@ -874,7 +895,7 @@ proc registerOpenFile*(ls: LanguageServer, textDocument: TextDocumentItem) =
     debug "New document opened for URI:", uri = uri
     let
       file = open(ls.uriStorageLocation(uri), fmWrite)
-      projectFileFuture = getProjectFile(uriToPath(uri), ls)
+      projectFileFuture = ls.getProjectFileAfterStartup(uriToPath(uri))
 
     ls.openFiles[uri] = NlsFileInfo(
       projectFile: projectFileFuture,
@@ -897,7 +918,7 @@ proc setupOpenFile*(
   ## The rest of opening a file, once `registerOpenFile` has made it visible:
   ## get a nimsuggest for it and open the project file it belongs to.
   with textDocument:
-    let projectFile = await ls.openFiles[uri].projectFile
+    let projectFile = await ls.openFiles[uri].waitProjectFile()
     debug "Document associated with the following projectFile",
       uri = uri, projectFile = projectFile
     if not ls.projectFiles.hasKey(projectFile):

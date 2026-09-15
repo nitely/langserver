@@ -7,4 +7,5 @@ import
   ttestrunner,
   tmcp,
   tstdio,
-  tlifecycle
+  tlifecycle,
+  tslowstartup

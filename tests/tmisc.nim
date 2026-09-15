@@ -216,15 +216,69 @@ suite "Nimlangserver didOpen ordering":
       }
     discard waitFor client.initialize(initParams)
 
-    ls.nimsuggestInit = newFuture[void]("parked") #So didOpen gets no further
+    let startup = newFuture[void]("parked")
+    ls.nimsuggestInit = startup #So didOpen gets no further than registering the file
     let file = "projects/hw/hw.nim"
     let uri = fixtureUri(file)
     client.notify("textDocument/didOpen", %createDidOpenParams(file))
+    let request = client.call("textDocument/definition", %positionParams(uri, 1, 6))
+
+    # The file's project is only resolved once the startup is done, so the
+    # request waits for it rather than being answered as if the file were unknown.
+    waitFor sleepAsync(1.seconds)
+    check not request.finished
+
+    startup.complete()
+    let locations = to(waitFor request.wait(30.seconds), seq[Location])
+
+    check locations.len == 1
+    check locations[0].uri == uri
+
+suite "Nimlangserver request cancelled during startup":
+  let cmdParams =
+    CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+  let ls = main(cmdParams)
+  let client = newLspSocketClient()
+  waitFor client.connect("localhost", cmdParams.port)
+  client.registerNotification(
+    "window/showMessage", "extension/statusUpdate", "textDocument/publishDiagnostics",
+    "$/progress",
+  )
+
+  test "cancelling it leaves the open file and the startup untouched":
+    # The request waits on the file's `projectFile`, which waits on
+    # `nimsuggestInit`; both are shared. Cancelling the request used to cancel
+    # them along with it, so `didOpen` failed and every later request for the
+    # file was answered with "Request cancelled".
+    let initParams =
+      LspInitializeParams %* {
+        "processId": %getCurrentProcessId(),
+        "rootUri": fixtureUri("projects/hw/"),
+        "capabilities": {"window": {"workDoneProgress": true}},
+      }
+    discard waitFor client.initialize(initParams)
+
+    let startup = newFuture[void]("parked")
+    ls.nimsuggestInit = startup
+    let file = "projects/hw/hw.nim"
+    let uri = fixtureUri(file)
+    client.notify("textDocument/didOpen", %createDidOpenParams(file))
+    let cancelled = client.call("textDocument/definition", %positionParams(uri, 1, 6))
+    let id = toSeq(client.responses.keys).max
+    waitFor sleepAsync(200.milliseconds)
+    client.notify("$/cancelRequest", %*{"id": id})
+
+    check waitFor cancelled.withTimeout(10.seconds)
+    check not startup.cancelled
+    check not ls.openFiles[uri].projectFile.cancelled
+
+    startup.complete()
     let locations = to(
-      waitFor client.call("textDocument/definition", %positionParams(uri, 1, 6)),
+      waitFor client
+      .call("textDocument/definition", %positionParams(uri, 1, 6))
+      .wait(30.seconds),
       seq[Location],
     )
-
     check locations.len == 1
     check locations[0].uri == uri
 

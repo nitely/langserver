@@ -255,7 +255,7 @@ proc extensionSuggest*(
     let uri = projectFile.pathToUri
     if uri in ls.openFiles:
       let openFile = ls.openFiles[uri]
-      projectFile = await openFile.projectFile
+      projectFile = await openFile.waitProjectFile()
       debug "[ExtensionSuggest] Found project file for ",
         file = params.projectFile, project = projectFile
     else:
