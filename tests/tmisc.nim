@@ -270,7 +270,9 @@ suite "Nimlangserver request cancelled during startup":
 
     check waitFor cancelled.withTimeout(10.seconds)
     check not startup.cancelled
-    check not ls.openFiles[uri].projectFile.cancelled
+    check uri in ls.openFiles
+    if uri in ls.openFiles:
+      check not ls.openFiles[uri].projectFile.cancelled
 
     startup.complete()
     let locations = to(
