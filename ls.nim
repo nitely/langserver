@@ -38,6 +38,8 @@ const
   NIM_EXPAND_ARC_BY_DEFAULT* = false
   NIM_EXPAND_MACRO_BY_DEFAULT* = false
   NIM_MAX_NS_PROCESSES* = 1
+  MAX_NS_FAILS* = 10
+  NS_FAIL_COOLDOWN* = chronos.minutes(1)
 
 type
   NlsNimsuggestConfig* = ref object of RootObj
@@ -192,6 +194,7 @@ type
     failTable*: Table[string, int]
       #Project file to fail count
       #List of errors (crashes) nimsuggest has had since the lsp session started
+    lastFailTime*: Table[string, Moment] #Project file to the moment of its last failure
     checkInProgress*: bool
 
   Certainty* = enum
@@ -824,6 +827,10 @@ proc warnIfUnknown*(
       MessageType.Warning,
     )
 
+proc clearFailures*(ls: LanguageServer, projectFile: string) =
+  ls.failTable.del(projectFile)
+  ls.lastFailTime.del(projectFile)
+
 proc createOrRestartNimsuggest*(
   ls: LanguageServer, projectFile: string, uri = ""
 ): Future[void] {.async: (raw: true, raises: [CancelledError]).}
@@ -859,8 +866,18 @@ proc getNimsuggestInner(
     # Wait a bit to allow nimsuggest to start
     await sleepAsync(10)
 
-  const MaxFails = 10
-  if ls.failTable.getOrDefault(projectFile, 0) >= MaxFails:
+  if ls.failTable.getOrDefault(projectFile, 0) >= MAX_NS_FAILS and
+      Moment.now() - ls.lastFailTime.getOrDefault(projectFile) >= NS_FAIL_COOLDOWN:
+    debug "Retrying a project that reached the fail cap", projectFile = projectFile
+    ls.clearFailures(projectFile)
+    let failed = ls.projectFiles.getOrDefault(projectFile)
+    if failed != nil:
+      failed.stop()
+      ls.projectFiles.del(projectFile)
+    await ls.createOrRestartNimsuggest(projectFile, uri)
+    await sleepAsync(10)
+
+  if ls.failTable.getOrDefault(projectFile, 0) >= MAX_NS_FAILS:
     let nextNs = ls.projectFiles.keys.toSeq.filterIt(it != projectFile)
     if nextNs.len > 0:
       let nextNs = nextNs[0]
@@ -1129,6 +1146,7 @@ proc onErrorCallback(
     uri = args[1]
   debug "Nimsuggest needed to be restarted due to an error "
   ls.failTable[project.file] = ls.failTable.getOrDefault(project.file, 0) + 1
+  ls.lastFailTime[project.file] = Moment.now()
   debug "Fail count", count = ls.failTable[project.file]
   let configuration = ls.getWorkspaceConfiguration()
   warn "Server stopped.", projectFile = project.file
@@ -1212,7 +1230,7 @@ proc createOrRestartNimsuggestImpl(
     if project != nil:
       project.stop()
     ls.projectFiles[projectFile] = projectNext
-    ls.failTable.del(projectFile)
+    ls.clearFailures(projectFile)
     ls.showMessage(fmt "Nimsuggest initialized for {projectFile}", MessageType.Info)
     traceAsyncErrors ls.checkProject(uri)
     projectNext.ns.openFiles.incl uri

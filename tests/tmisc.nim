@@ -89,6 +89,21 @@ suite "Nimlangserver fail count":
 
     check hwAbsFile notin ls.failTable
 
+  test "a project parked at the fail cap is retried once the cooldown is over":
+    let helloWorldFile = "projects/hw/hw.nim"
+    let hwAbsFile = uriToPath(helloWorldFile.fixtureUri())
+    check waitUntil(hwAbsFile in ls.projectFiles, 30.seconds)
+    let parked = ls.projectFiles[hwAbsFile]
+
+    ls.failTable[hwAbsFile] = MAX_NS_FAILS
+    ls.lastFailTime[hwAbsFile] = Moment.now() - NS_FAIL_COOLDOWN
+
+    discard waitFor client
+      .call("textDocument/hover", %positionParams(helloWorldFile.fixtureUri, 2, 0))
+      .wait(60.seconds)
+    check hwAbsFile notin ls.failTable
+    check ls.projectFiles.getOrDefault(hwAbsFile) != parked
+
 suite "Nimlangserver pending requests":
   test "cancelled projectFile future does not escape addProjectFileToPendingRequest":
     # Regression test for #419: addProjectFileToPendingRequest is asyncSpawn'd,
