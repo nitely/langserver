@@ -544,7 +544,7 @@ proc getNimsuggestPathAndVersion(
       await ls.getNimbleDumpInfo("", workingDir)
 
   let nimDir = nimbleDumpInfo.nimDir.get ""
-  var nimsuggestPath = expandTilde(conf.nimsuggestPath.get(""))
+  var nimsuggestPath = "/home/esteban/AtomProjects/Nim/bin/nimsuggest" #expandTilde(conf.nimsuggestPath.get(""))
   var nimVersion = ""
   if nimsuggestPath == "":
     if nimDir != "" and nimDir.dirExists:
@@ -1163,7 +1163,7 @@ proc createOrRestartNimsuggestImpl(
     try:
       debug "Starting createOrRestartNimsuggest", projectFile = projectFile, uri = uri
       let
-        configuration = ls.getWorkspaceConfiguration()
+        configuration = await ls.getAndWaitForWorkspaceConfiguration()
         workingDir = await ls.getWorkingDir(projectFile)
         (nimsuggestPath, version) =
           await ls.getNimsuggestPathAndVersion(configuration, workingDir)

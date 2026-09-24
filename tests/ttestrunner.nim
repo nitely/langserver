@@ -51,3 +51,8 @@ suite "Test Runner":
     check testProjectResult.suites[0].skipped == 0
     check testProjectResult.suites[0].time > 0.0 and
       testProjectResult.suites[0].time < 1.0
+
+  test "should not run the compiler when the entry point does not exist":
+    let testProjectInfo = waitFor listTests("", "nim", getCurrentDir())
+    check testProjectInfo.suites.len == 0
+    check testProjectInfo.error.isSome

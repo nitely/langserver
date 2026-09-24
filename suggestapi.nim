@@ -104,6 +104,7 @@ type
     nimsuggestPath*: string
     version*: string
     project*: Project
+    startArgs*: seq[string]
 
   Nimsuggest* = ref NimsuggestImpl
 
@@ -411,6 +412,7 @@ proc createNimsuggest*(
         args.add("--exceptionInlayHints:on")
       else:
         args.add("--exceptionInlayHints:off")
+    ns.startArgs = args
     result.process = await startProcess(
       nimsuggestPath,
       arguments = args,

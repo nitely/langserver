@@ -95,6 +95,13 @@ proc listTests*(
   var entryPoint = getFullPath(entryPoint, workspaceRoot)
   let executableDir = (getTempDir() / entryPoint.splitFile.name).absolutePath
   debug "Listing tests", entryPoint = entryPoint, exists = fileExists(entryPoint)
+  if not fileExists(entryPoint):
+    error "Entry point does not exist", entryPoint = entryPoint
+    return TestProjectInfo(
+      entryPoint: entryPoint,
+      suites: initTable[string, TestSuiteInfo](),
+      error: some fmt"Entry point does not exist: '{entryPoint}'",
+    )
   let args =
     @["c", "--outdir:" & executableDir, "-d:unittest2ListTests", "-r", entryPoint]
   let process = await startProcess(
