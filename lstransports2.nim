@@ -57,7 +57,7 @@ proc wrapRpc*[T, F](fn: proc(params: T): F {.gcsafe, raises: [].}): Rpc =
   return proc(params: RequestParamsRx): Future[JsonString] {.async.} =
     let val =
       try:
-        LspJson.decode(params.toJson, T, requireAllFields = true)
+        LspJson.decode(params.toJson, T)
       except CatchableError as ex:
         raise (ref ApplicationError)(code: ord(InvalidParams), msg: ex.msg)
     try:

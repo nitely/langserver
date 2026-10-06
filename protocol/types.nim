@@ -1170,7 +1170,7 @@ type
 
 createJsonFlavor LspJson,
   automaticObjectSerialization = true,
-  requireAllFields = false,
+  requireAllFields = true,
   omitOptionalFields = true,
   allowUnknownFields = true,
   skipNullFields = true
