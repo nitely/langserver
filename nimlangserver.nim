@@ -217,7 +217,7 @@ when isMainModule:
     try:
       waitFor ls.serve()
     finally:
-      waitFor ls.stopNimsuggestProcesses()
+      waitFor ls.shutdownNimsuggest()
   except Exception as e:
     error "Error in main"
     writeStackTrace e
