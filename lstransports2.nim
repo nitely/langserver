@@ -140,16 +140,10 @@ proc route(
     )
   result.complete(default(seq[byte]))
 
-proc register(ls: LanguageServer, conn: RpcConnection) =
-  ## Makes the connection *the* client: `ls.notify` and `ls.call` talk to
-  ## whatever is registered here.
-  ls.srv.connections.incl(conn)
-  ls.connection = conn
-
-proc unregister(ls: LanguageServer, conn: RpcConnection) =
-  ls.srv.connections.excl(conn)
-  if ls.connection == conn:
-    ls.connection = nil
+proc client*(ls: LanguageServer): RpcConnection =
+  for conn in ls.srv.connections:
+    return conn
+  nil
 
 proc endServing(ls: LanguageServer, failure: ref JsonRpcError = nil) =
   if ls.served.isNil or ls.served.finished:
@@ -193,7 +187,7 @@ proc processSocketClient(
 ) {.async: (raises: []).} =
   let remote = transport.remoteAddress2().valueOr(default(TransportAddress))
 
-  if not ls.connection.isNil:
+  if ls.srv.connections.len > 0:
     warn "Refusing a second client, only one is served", address = remote
     await transport.closeWait()
     return
@@ -208,12 +202,12 @@ proc processSocketClient(
   )
 
   debug "Client connected", address = remote
-  ls.register(conn)
+  ls.srv.connections.incl(conn)
 
   await conn.attach(transport, $remote)
 
   conn.logDisconnect($remote)
-  ls.unregister(conn)
+  ls.srv.connections.excl(conn)
   await ls.stopSocketServer()
   ls.endServing()
 
@@ -230,12 +224,12 @@ proc processStdioClient(
   )
 
   debug "Serving the client on stdio"
-  ls.register(conn)
+  ls.srv.connections.incl(conn)
 
   await conn.attach(input, output, "stdio")
 
   conn.logDisconnect("stdio")
-  ls.unregister(conn)
+  ls.srv.connections.excl(conn)
   ls.endServing(conn.lastError)
 
 proc initActions*(ls: LanguageServer) =
@@ -248,7 +242,7 @@ proc initActions*(ls: LanguageServer) =
       await ls.stopSocketServer()
 
   let notifyAction: NotifyAction = proc(name: string, params: JsonString) =
-    let conn = ls.connection
+    let conn = ls.client
     if conn.isNil:
       return
     let reqParams = params.toParams.valueOr:
@@ -269,7 +263,7 @@ proc initActions*(ls: LanguageServer) =
       name: string, params: JsonString
   ): Future[JsonNode].Raising([CancelledError, JsonRpcError]) =
     let fut = Future[JsonNode].Raising([CancelledError, JsonRpcError]).init("ls.call")
-    let conn = ls.connection
+    let conn = ls.client
     if conn.isNil:
       fut.fail newException(JsonRpcError, "No client connected")
       return fut
@@ -324,7 +318,7 @@ proc endIfNoClient(
     await sleepAsync(timeout)
   except CancelledError:
     return
-  if ls.connection.isNil and not ls.served.finished:
+  if ls.srv.connections.len == 0 and not ls.served.finished:
     error "No client connected", timeout = timeout
     await ls.stopSocketServer()
     ls.endServing(newException(JsonRpcError, "No client connected within " & $timeout))

@@ -54,7 +54,7 @@ suite "Nimlangserver stdio transport":
   client.loop = client.attach(cliIn, cliOut, "stdio")
 
   test "The connection is served as soon as the server is started":
-    check not ls.connection.isNil
+    check not ls.client.isNil
 
   test "initialize is answered over stdio":
     let initParams = params(
@@ -75,5 +75,5 @@ suite "Nimlangserver stdio transport":
 
   test "The transport is closed on exit":
     waitFor ls.onExit()
-    check ls.connection.isNil
+    check ls.client.isNil
     waitFor client.close()

@@ -343,15 +343,26 @@ suite "Nimlangserver transport teardown":
     # libc fwrite. The connection is what is written to now, and a late
     # notification has to be a no-op once it is gone.
     let ls = LanguageServer(serverMode: lsp, transportMode: stdio)
-    ls.initActions()
-    check ls.connection.isNil
+    ls.initServer()
+    check ls.client.isNil
     ls.notify("window/showMessage", JsonString"{}")
+
+  test "a request sent after the client is gone fails":
+    # With no client to answer it, the request must fail right away rather
+    # than crash or wait forever.
+    let ls = LanguageServer(serverMode: lsp, transportMode: stdio)
+    ls.initServer()
+    check ls.client.isNil
+    let res = ls.call("workspace/configuration", JsonString"{}")
+    check res.failed
+    expect JsonRpcError:
+      discard waitFor res
 
 suite "Nimlangserver single client":
   #`ls` is a single session - one set of open files, one set of client
   #capabilities, one workspace configuration - so the socket server serves one
   #client at a time and hangs up on anyone else. Without this, a second client
-  #would silently take over `ls.connection` and the first one would stop
+  #would silently take over `ls.client` and the first one would stop
   #receiving notifications while still having its requests answered.
   let cmdParams =
     CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
@@ -361,7 +372,7 @@ suite "Nimlangserver single client":
   client.registerNotification("extension/statusUpdate")
 
   proc waitUntilConnected(ls: LanguageServer) {.async.} =
-    while ls.connection.isNil:
+    while ls.client.isNil:
       await sleepAsync(10.milliseconds)
 
   waitFor ls.waitUntilConnected().wait(10.seconds)
@@ -372,7 +383,7 @@ suite "Nimlangserver single client":
     let data = waitFor second.read().wait(10.seconds)
     check data.len == 0
     check second.atEof()
-    check ls.connection != nil
+    check not ls.client.isNil
     waitFor second.closeWait()
 
   test "The first client is still served":
@@ -389,7 +400,7 @@ suite "Nimlangserver socket session":
     let ls = main(cmdParams)
     let client = newLspSocketClient()
     waitFor client.connect("localhost", cmdParams.port)
-    check waitUntil(ls.connection != nil, 10.seconds)
+    check waitUntil(not ls.client.isNil, 10.seconds)
     waitFor client.transport.shutdownWait()
     waitFor client.transport.closeWait()
     check waitFor ls.serve().withTimeout(10.seconds)
@@ -397,6 +408,25 @@ suite "Nimlangserver socket session":
     #No one else can connect and take over the session
     expect TransportError:
       discard waitFor connect(resolveTAddress("localhost", cmdParams.port)[0])
+
+  test "Talking to a client that left does not crash the server":
+    let cmdParams =
+      CommandLineParams(mode: some lsp, transport: some socket, port: getNextFreePort())
+    let ls = main(cmdParams)
+    let client = newLspSocketClient()
+    waitFor client.connect("localhost", cmdParams.port)
+    check waitUntil(not ls.client.isNil, 10.seconds)
+    waitFor client.transport.shutdownWait()
+    waitFor client.transport.closeWait()
+    check waitFor ls.serve().withTimeout(10.seconds)
+    check ls.client.isNil
+    #The notification is dropped and the request fails, nothing is written to
+    #the closed connection
+    ls.notify("window/showMessage", JsonString"{}")
+    let res = ls.call("workspace/configuration", JsonString"{}")
+    check res.failed
+    expect JsonRpcError:
+      discard waitFor res
 
   test "The session fails when no client connects in time":
     let cmdParams =
