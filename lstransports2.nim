@@ -57,7 +57,7 @@ proc wrapRpc*[T, F](fn: proc(params: T): F {.gcsafe, raises: [].}): Rpc =
   return proc(params: RequestParamsRx): Future[JsonString] {.async.} =
     let val =
       try:
-        LspConv.decode(params.toJson, T, requireAllFields = true)
+        LspJson.decode(params.toJson, T, requireAllFields = true)
       except CatchableError as ex:
         raise (ref ApplicationError)(code: ord(InvalidParams), msg: ex.msg)
     try:
@@ -66,7 +66,7 @@ proc wrapRpc*[T, F](fn: proc(params: T): F {.gcsafe, raises: [].}): Rpc =
         return JsonString("null")
       else:
         let res = await fn(val)
-        return JsonString(LspConv.encode(res))
+        return JsonString(LspJson.encode(res))
     except CancelledError:
       raise
         (ref ApplicationError)(code: ord(RequestCancelled), msg: "Request cancelled")
@@ -95,7 +95,7 @@ proc trackRequest(
     for np in req.params.named:
       if np.name == "textDocument":
         try:
-          let uri = LspConv.decode(np.value, TextDocumentIdentifier).uri
+          let uri = LspJson.decode(np.value, TextDocumentIdentifier).uri
           asyncSpawn ls.addProjectFileToPendingRequest(reqId, uri)
         except CatchableError as ex:
           error "Cannot read the request textDocument", err = ex.msg
@@ -274,7 +274,7 @@ proc initActions*(ls: LanguageServer) =
     proc call() {.async: (raises: []).} =
       try:
         let res = await conn.call(name, reqParams)
-        fut.complete(LspConv.decode(res, JsonNode))
+        fut.complete(LspJson.decode(res, JsonNode))
       except CancelledError as ex:
         fut.fail ex
       except CatchableError as ex:

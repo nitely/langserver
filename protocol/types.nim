@@ -1168,7 +1168,7 @@ type
   CancelTestResult* = object
     cancelled*: bool
 
-createJsonFlavor LspConv,
+createJsonFlavor LspJson,
   automaticObjectSerialization = true,
   requireAllFields = false,
   omitOptionalFields = true,

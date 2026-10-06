@@ -217,12 +217,12 @@ macro `%*`*(t: untyped, inputStream: untyped): untyped =
       raiseAssert getCurrentExceptionMsg()
 
 proc notify*[T](ls: LanguageServer, name: string, params: T) =
-  ls.notifyAction(name, JsonString LspConv.encode(params))
+  ls.notifyAction(name, JsonString LspJson.encode(params))
 
 proc call*[T](
     ls: LanguageServer, name: string, params: T
 ): Future[JsonNode] {.async: (raw: true, raises: [CancelledError, JsonRpcError]).} =
-  ls.callAction(name, JsonString LspConv.encode(params))
+  ls.callAction(name, JsonString LspJson.encode(params))
 
 proc initLs*(params: CommandLineParams, storageDir: string): LanguageServer =
   LanguageServer(
@@ -440,7 +440,7 @@ proc getLspStatus*(ls: LanguageServer): NimLangServerStatus {.raises: [].} =
   result.projectErrors = ls.projectErrors
 
 proc sendStatusChanged*(ls: LanguageServer) {.raises: [].} =
-  let status = JsonString LspConv.encode(ls.getLspStatus())
+  let status = JsonString LspJson.encode(ls.getLspStatus())
   if status != ls.lastStatusSent:
     ls.notify("extension/statusUpdate", status)
     ls.lastStatusSent = status
