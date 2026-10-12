@@ -621,10 +621,19 @@ createFileOnlyCommand(chk)
 createFileOnlyCommand(chkFile)
 createFileOnlyCommand(changed)
 createFileOnlyCommand(outline)
+createFileOnlyCommand(outline2)
 createFileOnlyCommand(known)
 createFileOnlyCommand(globalSymbols)
 createGlobalCommand(recompile)
 createRangeCommand(inlayHints)
+
+proc outlineFile*(
+    self: Nimsuggest, file: string, dirtyfile = ""
+): Future[seq[Suggest]].Raising([CancelledError, NimsuggestError]) =
+  if nsOutline2 in self.capabilities:
+    self.outline2(file, dirtyfile)
+  else:
+    self.outline(file, dirtyfile)
 
 proc `mod`*(
     nimsuggest: Nimsuggest, file: string, dirtyfile = ""

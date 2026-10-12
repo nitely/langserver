@@ -1,9 +1,10 @@
 import
-  std/[os, strutils, options],
+  std/[os, strutils, options, sequtils],
   chronos,
   chronos/asyncproc,
   unittest2,
   ../suggestapi,
+  ../protocol/types,
   ./testhelpers
 
 const inputLine =
@@ -67,6 +68,14 @@ suite "Nimsuggest tests":
     let res = waitFor nimSuggest.sug(helloWorldFile, helloWorldFile, 2, 0)
     check res.len > 1
     check res.len > 1 and res[0].forth == "proc ()"
+
+  test "outlineFile uses outline2 when nimsuggest supports it":
+    let res = waitFor nimSuggest.outlineFile(helloWorldFile)
+    check res.len > 0
+    for name in ["helloMacro", "helloProc", "Obj", "f"]:
+      check res.anyIt(it.qualifiedPath[^1] == name)
+    let command = if nsOutline2 in nimSuggest.capabilities: "outline2 " else: "outline "
+    check project.lastCmd.startsWith(command)
 
   test "test Nimsuggest.known":
     let res = waitFor nimSuggest.known(helloWorldFile)

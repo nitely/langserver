@@ -395,7 +395,7 @@ proc documentSymbols*(
   let uri = params.textDocument.uri
   let ns = await ls.tryGetNimsuggest(uri)
   if ns.isSome:
-    ns.get().outline(uriToPath(uri), ls.uriToStash(uri)).await().map(
+    ns.get().outlineFile(uriToPath(uri), ls.uriToStash(uri)).await().map(
       x => x.toUtf16Pos(ls).toSymbolInformation
     )
   else:
@@ -1211,6 +1211,9 @@ proc didSave*(
   let info = ls.openFiles.getOrDefault(uri)
   if info != nil:
     info.changed = false
+  if config.nimsuggestRestartOnSave.get(false):
+    traceAsyncErrors ls.restartNimsuggestOnSave(nimsuggest.get.project.file, uri)
+    return
   traceAsyncErrors nimsuggest.get.changed(uriToPath(uri))
 
   if config.checkOnSave.get(true):

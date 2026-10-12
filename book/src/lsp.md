@@ -132,6 +132,7 @@ LSP configuration is supplied by the client/editor via `nim.*` settings.
 | `nim.useNimCheck`             | Use `nim check` instead of `nimsuggest` for linting. Default: `true`.                                                                                             |
 | `nim.maxNimsuggestProcesses`  | Maximum number of live `nimsuggest` processes. `0` means unlimited. Default: `0`.                                                                                 |
 | `nim.nimsuggestMaxMemory`     | Memory cap per `nimsuggest` process in MB. `nimsuggest` quits when the value is reached. `0` means unlimited. Default: `nimsuggest`'s own default (4000 MB). Requires a `nimsuggest` advertising the `maxMemory` capability; ignored otherwise. |
+| `nim.nimsuggestRestartOnSave` | Replace the file's `nimsuggest` with a fresh process on every save instead of letting it recompile in place. The old process keeps answering until the new one is ready, and the restart runs the project check. Bounds `nimsuggest`'s memory to a single build; pays off when `nimsuggest` loads unchanged modules from a NIF cache (`--ideImports:nif`). Default: `false`. |
 | `nim.nimsuggestTimeout`       | Timeout in ms for the `nimsuggest` startup + initial compilation. Default: 60 seconds.                                                                            |
 
 ### Project mapping example

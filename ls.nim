@@ -93,6 +93,7 @@ type
     nimsuggestMaxMemory*: Option[int]
       #memory cap per nimsuggest process in MB. zero means unlimited
     useNimTrack*: Option[bool]
+    nimsuggestRestartOnSave*: Option[bool]
 
   NlsFileInfo* = ref object of RootObj
     projectFile*: Future[string].Raising([CancelledError, OSError, RegexError])
@@ -1296,6 +1297,14 @@ proc createOrRestartNimsuggest*(
     ls: LanguageServer, projectFile: string, uri = ""
 ): Future[void] {.async: (raw: true, raises: [CancelledError]).} =
   ls.createOrRestartNimsuggestUnprotected(projectFile, uri).join()
+
+proc restartNimsuggestOnSave*(
+    ls: LanguageServer, projectFile: string, uri: string
+): Future[void] {.async: (raises: [CancelledError]).} =
+  let inFlight = ls.nimsuggestCreations.getOrDefault(projectFile)
+  if not inFlight.isNil and not inFlight.finished:
+    await inFlight.join()
+  await ls.createOrRestartNimsuggest(projectFile, uri)
 
 proc restartAllNimsuggestInstances(
     ls: LanguageServer
