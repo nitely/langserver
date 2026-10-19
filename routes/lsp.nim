@@ -147,7 +147,7 @@ proc definition*(
 .} =
   ls.checkInitialized()
   with (params.position, params.textDocument):
-    let config = ls.getWorkspaceConfiguration()
+    let config = await ls.workspaceConfigurationWait()
     # `nim track` only works on files as saved on disk; it has no dirty-buffer
     # support. Use it only when the file is open and has no unsaved changes,
     # otherwise fall back to nimsuggest (which supports dirty buffers).
@@ -375,11 +375,18 @@ proc documentSymbols*(
   else:
     @[]
 
-proc scheduleFileCheck(ls: LanguageServer, uri: string) {.gcsafe, raises: [].} =
-  if not ls.getWorkspaceConfiguration().autoCheckFile.get(false):
+proc scheduleFileCheck(ls: LanguageServer, uri: string) {.async: (raises: []).} =
+  let conf =
+    try:
+      await ls.workspaceConfigurationWait()
+    except CancelledError:
+      return
+  if not conf.autoCheckFile.get(false):
     return
   # schedule file check after the file is modified
   let fileData = ls.openFiles.getOrDefault(uri)
+  if fileData == nil:
+    return
   if fileData.cancelFileCheck != nil and not fileData.cancelFileCheck.finished:
     fileData.cancelFileCheck.complete()
 
@@ -399,7 +406,7 @@ proc scheduleFileCheck(ls: LanguageServer, uri: string) {.gcsafe, raises: [].} =
           info.checkInProgress = false
           if fileData.needsChecking:
             fileData.needsChecking = false
-            ls.scheduleFileCheck(uri)
+            asyncSpawn ls.scheduleFileCheck(uri)
 
 proc toMdLinks(s: string): string =
   result = s
@@ -432,7 +439,7 @@ proc hover*(
 .} =
   ls.checkInitialized()
   with (params.position, params.textDocument):
-    let config = ls.getWorkspaceConfiguration()
+    let config = await ls.workspaceConfigurationWait()
     let nimsuggest = await ls.tryGetNimsuggest(uri)
     if nimsuggest.isNone:
       return none(Hover)
@@ -495,7 +502,7 @@ proc references*(
 .} =
   ls.checkInitialized()
   with (params.position, params.textDocument, params.context):
-    let config = ls.getWorkspaceConfiguration()
+    let config = await ls.workspaceConfigurationWait()
     # `nim track` only works on files as saved on disk; it has no dirty-buffer
     # support. Use it only when the file is open and has no unsaved changes,
     # otherwise fall back to nimsuggest (which supports dirty buffers).
@@ -660,7 +667,7 @@ proc inlayHint*(
   debug "inlayHint received..."
   with (params.range, params.textDocument):
     let
-      configuration = ls.getWorkspaceConfiguration()
+      configuration = await ls.workspaceConfigurationWait()
       nimsuggest = await ls.tryGetNimsuggest(uri)
 
     if nimsuggest.isNone or nimsuggest.get.protocolVersion < 4 or
@@ -1035,7 +1042,7 @@ proc listTests*(
     )
 .} =
   ls.checkInitialized()
-  let config = ls.getWorkspaceConfiguration()
+  let config = await ls.workspaceConfigurationWait()
   let workspaceRoot = ls.lspInitializeParams.getRootPath
   let nimPath = await ls.getNimPath(config, workspaceRoot)
   if nimPath.isNone:
@@ -1059,7 +1066,7 @@ proc runTests*(
     )
 .} =
   ls.checkInitialized()
-  let config = ls.getWorkspaceConfiguration()
+  let config = await ls.workspaceConfigurationWait()
   let workspaceRoot = ls.lspInitializeParams.getRootPath
   let nimPath = await ls.getNimPath(config, workspaceRoot)
   if nimPath.isNone:
@@ -1135,7 +1142,7 @@ proc didChange*(
         for line in contentChanges[0].text.splitLines:
           info.fingerTable.add line.createUTFMapping()
           file.writeLine line
-        ls.scheduleFileCheck(uri)
+        asyncSpawn ls.scheduleFileCheck(uri)
 
 proc willSaveWaitUntil*(
     ls: LanguageServer, params: WillSaveTextDocumentParams
@@ -1152,7 +1159,7 @@ proc willSaveWaitUntil*(
 
   let
     uri = params.textDocument.uri
-    config = ls.getWorkspaceConfiguration()
+    config = await ls.workspaceConfigurationWait()
     nphPath = getNphPath()
 
   let shouldFormat =
@@ -1175,7 +1182,7 @@ proc didSave*(
   ls.checkInitialized()
   let
     uri = params.textDocument.uri
-    config = ls.getWorkspaceConfiguration()
+    config = await ls.workspaceConfigurationWait()
   let nimsuggest = await ls.tryGetNimsuggest(uri)
 
   if nimsuggest.isNone:
@@ -1233,9 +1240,7 @@ proc didChangeConfiguration*(
     #the client pushes its settings, so this is the only place they come from
     let
       hadConfiguration = ls.workspaceConfigurationReady.finished
-      oldConfiguration = ls.getWorkspaceConfiguration()
+      oldConfiguration = ls.workspaceConfiguration
     ls.setWorkspaceConfiguration(conf)
     if hadConfiguration: #the first configuration is not a change
-      await handleConfigurationChanges(
-        ls, oldConfiguration, ls.getWorkspaceConfiguration()
-      )
+      await handleConfigurationChanges(ls, oldConfiguration, ls.workspaceConfiguration)
