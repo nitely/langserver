@@ -499,40 +499,6 @@ proc usePullConfigurationModel*(ls: LanguageServer): bool =
   ls.requiresDynamicRegistrationForDidChangeConfiguration and
     ls.supportsConfigurationRequest
 
-proc inlayExceptionHintsConfigurationEquals*(a, b: NlsInlayHintsConfig): bool =
-  if a.exceptionHints.isSome and b.exceptionHints.isSome:
-    let
-      ae = a.exceptionHints.get
-      be = b.exceptionHints.get
-    result =
-      (ae.enable == be.enable) and (ae.hintStringLeft == be.hintStringLeft) and
-      (ae.hintStringRight == be.hintStringRight)
-  else:
-    result = a.exceptionHints.isSome == b.exceptionHints.isSome
-
-proc inlayExceptionHintsConfigurationEquals*(a, b: NlsConfig): bool =
-  if a.inlayHints.isSome and b.inlayHints.isSome:
-    result = inlayExceptionHintsConfigurationEquals(a.inlayHints.get, b.inlayHints.get)
-  else:
-    result = a.inlayHints.isSome == b.inlayHints.isSome
-
-proc inlayHintsConfigurationEquals*(a, b: NlsConfig): bool =
-  proc inlayTypeHintsConfigurationEquals(a, b: NlsInlayHintsConfig): bool =
-    if a.typeHints.isSome and b.typeHints.isSome:
-      result = a.typeHints.get.enable == b.typeHints.get.enable
-    else:
-      result = a.typeHints.isSome == b.typeHints.isSome
-
-  proc inlayHintsConfigurationEquals(a, b: NlsInlayHintsConfig): bool =
-    result =
-      inlayTypeHintsConfigurationEquals(a, b) and
-      inlayExceptionHintsConfigurationEquals(a, b)
-
-  if a.inlayHints.isSome and b.inlayHints.isSome:
-    result = inlayHintsConfigurationEquals(a.inlayHints.get, b.inlayHints.get)
-  else:
-    result = a.inlayHints.isSome == b.inlayHints.isSome
-
 proc getNimVersion(nimDir: string): string {.raises: [OSError, IOError].} =
   let cmd =
     if nimDir == "":
@@ -1303,12 +1269,19 @@ proc createOrRestartNimsuggest*(
 ): Future[void] {.async: (raw: true, raises: [CancelledError]).} =
   ls.createOrRestartNimsuggestUnprotected(projectFile, uri).join()
 
-proc restartAllNimsuggestInstances(
-    ls: LanguageServer
-): Future[void] {.async: (raises: [CancelledError]).} =
-  debug "Restarting all nimsuggest instances"
-  for projectFile in ls.projectFiles.keys.toSeq:
-    await ls.createOrRestartNimsuggest(projectFile, projectFile.pathToUri)
+proc stopNimsuggests(ls: LanguageServer) {.async: (raises: []).} =
+  let
+    creations = toSeq(ls.nimsuggestCreations.values)
+    projects = toSeq(ls.projectFiles.values)
+  ls.nimsuggestCreations.clear()
+  ls.projectFiles.clear()
+  var stops: seq[Future[void].Raising([])]
+  for creation in creations:
+    stops.add creation.cancelAndWait()
+  for project in projects:
+    project.errorCallback = none(ProjectCallback)
+    stops.add project.stopWait()
+  await noCancel allFutures(stops)
 
 proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
   if ls.requiresDynamicRegistrationForDidChangeConfiguration:
@@ -1335,17 +1308,24 @@ proc maybeRegisterCapabilityDidChangeConfiguration*(ls: LanguageServer) =
 proc handleConfigurationChanges*(
     ls: LanguageServer, oldConfiguration, newConfiguration: NlsConfig
 ): Future[void] {.async: (raises: [CancelledError]).} =
+  ## Nimsuggests take their settings when they start, so any change stops them;
+  ## the open files look their project up again and start one on their next request.
+  #Clients send a change for settings of any section, not only ours
+  if $(%oldConfiguration) == $(%newConfiguration):
+    return
+  debug "Stopping all nimsuggest instances"
+  let stopping = ls.stopNimsuggests()
+  for uri, file in ls.openFiles:
+    file.projectFile = ls.getProjectFileAfterStartup(uri.uriToPath)
+    file.nimsuggestProject = ""
+  ls.sendStatusChanged()
   if ls.lspClientCapabilities.workspace.isSome and
       ls.lspClientCapabilities.workspace.get.inlayHint.isSome and
-      ls.lspClientCapabilities.workspace.get.inlayHint.get.refreshSupport.get(false) and
-      not inlayHintsConfigurationEquals(oldConfiguration, newConfiguration):
-    # toggling the exception hints triggers a full nimsuggest restart, since they are controlled by a nimsuggest command line option
-    #   --exceptionInlayHints:on|off
-    if not inlayExceptionHintsConfigurationEquals(oldConfiguration, newConfiguration):
-      await ls.restartAllNimsuggestInstances()
+      ls.lspClientCapabilities.workspace.get.inlayHint.get.refreshSupport.get(false):
     debug "Sending inlayHint refresh"
     #An empty object means no params at all
     ls.inlayHintsRefreshRequest = ls.call("workspace/inlayHint/refresh", JsonString"{}")
+  await stopping
 
 proc maybeRequestConfigurationFromClient*(
     ls: LanguageServer
@@ -1387,14 +1367,9 @@ proc getCharacter*(
 proc shutdownNimsuggest*(ls: LanguageServer) {.async: (raises: []).} =
   debug "stopping child nimsuggest processes"
   ls.isShutdownNimsuggest = true
-  var shutdowns: seq[Future[void].Raising([])]
   if not ls.nimsuggestInit.isNil:
-    shutdowns.add ls.nimsuggestInit.cancelAndWait()
-  for creation in ls.nimsuggestCreations.values:
-    shutdowns.add creation.cancelAndWait()
-  for project in ls.projectFiles.values:
-    shutdowns.add project.stopWait()
-  await noCancel allFutures(shutdowns)
+    await noCancel ls.nimsuggestInit.cancelAndWait()
+  await ls.stopNimsuggests()
 
 proc getProjectFile*(
     fileUri: string, ls: LanguageServer

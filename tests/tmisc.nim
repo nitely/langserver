@@ -495,22 +495,20 @@ suite "Nimlangserver nimsuggest creation":
     check ls.projectFiles.len == 1
     check not ls.projectFiles[hwProjectFile].process.isNil
 
-  test "handleConfigurationChanges restarts nimsuggest before it returns":
+  test "handleConfigurationChanges leaves nimsuggest alone when nothing changed":
     let previousPid = ls.projectFiles[hwProjectFile].process.pid
-    let oldConfiguration = NlsConfig(
-      inlayHints: some NlsInlayHintsConfig(
-        exceptionHints: some NlsInlayExceptionHintsConfig(enable: some true)
-      )
-    )
-    let newConfiguration = NlsConfig(
-      inlayHints: some NlsInlayHintsConfig(
-        exceptionHints: some NlsInlayExceptionHintsConfig(enable: some false)
-      )
-    )
+    waitFor ls.handleConfigurationChanges(NlsConfig(), NlsConfig()).wait(60.seconds)
+    check ls.projectFiles[hwProjectFile].process.pid == previousPid
+    check ls.inlayHintsRefreshRequest.isNil
+
+  test "handleConfigurationChanges stops nimsuggest before it returns":
+    let oldConfiguration = NlsConfig(timeout: some 120000)
+    let newConfiguration = NlsConfig(timeout: some 60000)
     waitFor ls.handleConfigurationChanges(oldConfiguration, newConfiguration).wait(
       60.seconds
     )
-    check ls.projectFiles[hwProjectFile].process.pid != previousPid
+    check ls.projectFiles.len == 0
+    check ls.nimsuggestCreations.len == 0
     check not ls.inlayHintsRefreshRequest.isNil
 
 suite "Nimlangserver nimsuggest timeout restart":
