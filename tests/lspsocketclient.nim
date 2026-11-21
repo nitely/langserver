@@ -197,7 +197,7 @@ proc openFile*(client: LspSocketClient, file: string) =
 
 proc positionParams*(uri: DocumentUri, line, character: int): TextDocumentPositionParams =
   TextDocumentPositionParams(
-    position: Position(line: line, character: character),
+    position: Position(line: uinteger(line), character: uinteger(character)),
     textDocument: TextDocumentIdentifier(uri: uri),
   )
 
